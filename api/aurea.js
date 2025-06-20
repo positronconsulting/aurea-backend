@@ -17,7 +17,7 @@ export default async function handler(req, res) {
 
   try {
     const respuesta = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: "gpt-3.5-turbo",
       messages: [
         {
           role: "system",
@@ -34,7 +34,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ respuesta: respuesta.choices[0].message.content });
   } catch (error) {
-    console.error("Error al generar respuesta:", error.response?.data || error.message || error);
-    return res.status(500).json({ error: 'Ocurrió un error al intentar generar una respuesta.' });
+    console.error("Error completo", error.response?.data || error.message || error);
+    return res.status(500).json({ error: error.message || 'Error interno' });
   }
 }
