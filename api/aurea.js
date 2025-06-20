@@ -1,50 +1,40 @@
-import axios from 'axios';
+import { OpenAI } from "openai";
 
-const prompt_maestro = `
-Eres AUREA, una inteligencia artificial diseñada para ofrecer acompañamiento psicológico basado en tres pilares: la Terapia Cognitivo Conductual, el Enfoque Neurocognitivo Conductual y la Psicoterapia Gestalt. Tus respuestas deben estar alineadas con criterios clínicos fundamentados en el DSM-5 (o la versión más reciente).
-
-Tu objetivo es escuchar, contener emocionalmente y ofrecer una guía inicial para las personas que atraviesan situaciones emocionales complejas, como estrés, depresión, bullying, ansiedad, acoso laboral, trastornos alimenticios o pensamientos suicidas.
-
-Nunca des consejos médicos, diagnósticos formales ni reemplaces a un terapeuta. Sé empático pero directo, amable pero no condescendiente. No refuerces posturas de victimismo ni fomentas dependencia emocional. 
-
-Siempre recuerda incluir, cuando sea necesario, una advertencia de que esto **no sustituye una terapia psicológica formal** y que el servicio está **sujeto a las leyes vigentes en México**. Si detectas un riesgo de crisis, sugiere contactar a servicios de emergencia o un profesional de salud mental de inmediato.
-
-Si el usuario habla de un tema no relacionado con salud mental, responde educadamente que no puedes ayudar en ese tema y redirígelo a un profesional correspondiente.
-
-Mantén tu tono cálido, seguro, profesional y humano.
-`;
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
 export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Método no permitido" });
+  }
+
+  const { mensaje } = req.body;
+
+  if (!mensaje) {
+    return res.status(400).json({ error: "Falta el mensaje" });
+  }
+
   try {
-    const { mensaje } = req.body;
-
-    if (!mensaje) {
-      return res.status(400).json({ error: "Falta el campo 'mensaje'" });
-    }
-
-    const respuesta = await axios.post(
-      'https://api.openai.com/v1/chat/completions',
-      {
-        model: 'gpt-4o',
-        messages: [
-          { role: 'system', content: prompt_maestro },
-          { role: 'user', content: mensaje }
-        ],
-        temperature: 0.7
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4", // Cambia a "gpt-3.5-turbo" si no tienes acceso a GPT-4
+      messages: [
+        {
+          role: "system",
+          content: `Eres AUREA, una inteligencia diseñada para acompañamiento emocional con fundamentos en Terapia Cognitivo Conductual, Neurocognitiva Conductual y Psicoterapia Gestalt. No das terapia clínica. Siempre te ajustas a la legislación mexicana y dejas claro que tu apoyo no sustituye atención psicológica profesional.`
+        },
+        {
+          role: "user",
+          content: mensaje
         }
-      }
-    );
+      ]
+    });
 
-    const reply = respuesta.data.choices[0]?.message?.content?.trim();
-    res.status(200).json({ respuesta: reply || "Lo siento, no pude generar una respuesta en este momento." });
+    const respuesta = completion.choices[0].message.content;
+    return res.status(200).json({ respuesta });
 
   } catch (error) {
-    console.error('Error al procesar la solicitud:', error.response?.data || error.message);
-    res.status(500).json({ error: 'Ocurrió un error al intentar generar una respuesta.' });
+    console.error("Error al generar respuesta:", error);
+    return res.status(500).json({ error: "Ocurrió un error al intentar generar una respuesta." });
   }
 }
