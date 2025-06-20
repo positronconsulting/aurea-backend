@@ -1,3 +1,9 @@
+export const config = {
+  api: {
+    bodyParser: true,
+  },
+};
+
 import { OpenAI } from "openai";
 
 const openai = new OpenAI({
