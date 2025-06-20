@@ -34,7 +34,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ respuesta: respuesta.choices[0].message.content });
   } catch (error) {
-    console.error("Error al generar respuesta:", error);
+    console.error("Error al generar respuesta:", error.response?.data || error.message || error);
     return res.status(500).json({ error: 'Ocurrió un error al intentar generar una respuesta.' });
   }
 }
