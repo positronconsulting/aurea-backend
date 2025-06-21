@@ -6,7 +6,7 @@ const openai = new OpenAI({
 
 export default async function handler(req, res) {
   // Habilitar CORS
-res.setHeader("Access-Control-Allow-Origin", "https://positronconsulting.com");
+res.setHeader("Access-Control-Allow-Origin", "https://www.positronconsulting.com");
 res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
 res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
