@@ -1,11 +1,21 @@
 import { OpenAI } from "openai";
-//trigger redeploy
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
+  // Habilitar CORS
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  // Manejo del preflight (OPTIONS)
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  if (req.method !== "POST") {
     return res.status(405).json({ error: 'Método no permitido' });
   }
 
@@ -17,7 +27,7 @@ export default async function handler(req, res) {
 
   try {
     const respuesta = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo",
+      model: "gpt-4o",
       messages: [
         {
           role: "system",
@@ -34,7 +44,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ respuesta: respuesta.choices[0].message.content });
   } catch (error) {
-    console.error("Error completo", error.response?.data || error.message || error);
-    return res.status(500).json({ error: error.message || 'Error interno' });
+    console.error("Error al generar respuesta:", error);
+    return res.status(500).json({ error: 'Ocurrió un error al intentar generar una respuesta.' });
   }
 }
