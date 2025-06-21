@@ -7,8 +7,8 @@
     "dev": "vercel dev"
   },
   "dependencies": {
-  "next": "13.4.12",
-  "openai": "^4.20.0"
+  "next": "^14.0.0",
+  "react": "^18.0.0",
+  "react-dom": "^18.0.0"
   }
-
 }
