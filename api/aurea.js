@@ -9,6 +9,19 @@ export const config = {
 };
 
 export default async function handler(req) {
+  // ✅ Manejar solicitudes OPTIONS (CORS preflight)
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "https://www.positronconsulting.com",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+      },
+    });
+  }
+
+  // ❌ Bloquear cualquier otro método que no sea POST
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ error: "Método no permitido" }), {
       status: 405,
@@ -45,11 +58,11 @@ Tampoco estás autorizado para brindar diagnósticos ni consejos médicos. No er
         headers: {
           "Content-Type": "application/json",
           "Access-Control-Allow-Origin": "https://www.positronconsulting.com"
-        }
+        },
       }
     );
   } catch (error) {
-    console.error(error);
+    console.error("Error interno:", error);
     return new Response(JSON.stringify({ error: "Error interno del servidor" }), {
       status: 500,
       headers: {
