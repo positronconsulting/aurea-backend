@@ -1,5 +1,5 @@
 import { OpenAI } from "openai";
-
+//trigger redeploy
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
