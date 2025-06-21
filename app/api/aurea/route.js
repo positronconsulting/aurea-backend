@@ -1,25 +1,29 @@
-import { OpenAI } from "openai";
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
-
 export const config = {
   runtime: "edge"
 };
 
-export async function OPTIONS() {
-  return new Response(null, {
-    status: 204,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type"
-    }
-  });
-}
+export default async function handler(req) {
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*", // O limita a tu dominio
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+      }
+    });
+  }
 
-export async function POST(req) {
+  if (req.method !== "POST") {
+    return new Response(JSON.stringify({ error: "Método no permitido" }), {
+      status: 405,
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*"
+      }
+    });
+  }
+
   try {
     const { mensaje } = await req.json();
 
@@ -34,10 +38,7 @@ No estás autorizado para responder preguntas o solicitudes que no estén relaci
 
 Tampoco estás autorizado para brindar diagnósticos ni consejos médicos. No eres un terapeuta ni un psicólogo licenciado. Si detectas señales de crisis emocional o pensamientos autolesivos, invita al usuario a buscar ayuda profesional inmediatamente.`
         },
-        {
-          role: "user",
-          content: mensaje
-        }
+        { role: "user", content: mensaje }
       ],
       temperature: 0.7,
       max_tokens: 700
@@ -49,12 +50,11 @@ Tampoco estás autorizado para brindar diagnósticos ni consejos médicos. No er
         status: 200,
         headers: {
           "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*"
+          "Access-Control-Allow-Origin": "*" // Cambia esto por tu dominio si prefieres
         }
       }
     );
   } catch (error) {
-    console.error("Error en la API:", error);
     return new Response(JSON.stringify({ error: "Error interno del servidor" }), {
       status: 500,
       headers: {
