@@ -15,7 +15,7 @@ export default async function handler(req) {
       headers: {
         'Access-Control-Allow-Origin': allowedOrigin,
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, x-session-id',
+        'Access-Control-Allow-Headers': 'Content-Type, x-session-id, x-institucion',
       },
     });
   }
@@ -23,7 +23,8 @@ export default async function handler(req) {
   if (req.method === 'POST') {
     try {
       const { mensaje } = await req.json();
-      const sessionId = 'demo'; // ← en pruebas. Luego vendrá de req.headers.get('x-session-id')
+      const sessionId = req.headers.get('x-session-id') || 'demo';
+      const institucion = req.headers.get('x-institucion') || 'desconocida';
 
       if (!sessionHistories.has(sessionId)) {
         sessionHistories.set(sessionId, []);
@@ -66,6 +67,11 @@ Para mantener continuidad, recuerda mentalmente solo lo esencial. No repitas tod
       const data = await response.json();
       const respuesta = data.choices?.[0]?.message?.content || 'Lo siento, no pude procesar tu mensaje.';
 
+      const inputTokens = data.usage?.prompt_tokens || 0;
+      const outputTokens = data.usage?.completion_tokens || 0;
+      const totalTokens = inputTokens + outputTokens;
+      const costoUSD = ((inputTokens * 0.005) + (outputTokens * 0.015)) / 1000;
+
       // Actualiza historial
       history.push({ role: 'user', content: mensaje });
       history.push({ role: 'assistant', content: respuesta });
@@ -73,6 +79,22 @@ Para mantener continuidad, recuerda mentalmente solo lo esencial. No repitas tod
       if (history.length > MAX_TURNS) {
         sessionHistories.set(sessionId, history.slice(-MAX_TURNS));
       }
+
+      // Enviar a Google Apps Script
+      await fetch("https://script.google.com/macros/s/AKfycbwhooKRTdqs-Mnf3oFylF_rE2kM1AMZ_a4XUOEJQmnGew80rYvP72l_wlfgsAtfL6qVSQ/exec", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          sessionId,
+          institucion,
+          inputTokens,
+          outputTokens,
+          totalTokens,
+          costoUSD
+        })
+      });
 
       return new Response(JSON.stringify({ respuesta }), {
         status: 200,
