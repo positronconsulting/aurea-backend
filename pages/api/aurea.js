@@ -1,6 +1,5 @@
-
 const sessionHistories = new Map();
-const MAX_TURNS = 6; // 3 interacciones completas (usuario + asistente)
+const MAX_TURNS = 6;
 
 export const config = {
   runtime: 'edge',
@@ -97,6 +96,22 @@ IMPORTANTE: Si detectas señales de crisis emocional, ideación suicida, peligro
           costoUSD
         })
       });
+
+      // 🔴 NUEVO: Detecta si empieza con "SOS" y manda alerta a backend
+      if (respuesta.startsWith("SOS")) {
+        await fetch("https://www.positronconsulting.com/_functions/alertaSOS", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            correoUsuario: sessionId,
+            institucion,
+            mensajeUsuario: mensaje,
+            respuestaAurea: respuesta
+          })
+        });
+      }
 
       return new Response(JSON.stringify({ respuesta }), {
         status: 200,
