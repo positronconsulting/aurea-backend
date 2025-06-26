@@ -1,50 +1,60 @@
+import { google } from 'googleapis';
+import { getSecret } from 'wix-secrets-backend';
+
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end(); // preflight
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Método no permitido" });
   }
 
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Método no permitido' });
-  }
-
-  const { email, codigo, yaRegistrado } = req.body;
-
-  if (!email || !codigo) {
-    return res.status(400).json({ error: 'Faltan datos' });
-  }
-
-  // 🔄 NUEVO: consultar SIEMPRE si el código está activo en Google Sheets
   try {
-    const respuesta = await fetch('https://script.google.com/macros/s/AKfycbxoLk1KxqGl_MVEU_2GoU5Da8fnx_frRaRfv9SCO2_yKI4HLQPO0F5AQKt6DVuf9k9XMw/exec', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, codigo })
+    const { codigo, email, yaRegistrado } = req.body;
+
+    if (!codigo || !email) {
+      return res.status(400).json({ error: "Faltan parámetros" });
+    }
+
+    const auth = new google.auth.GoogleAuth({
+      credentials: {
+        client_email: await getSecret("GOOGLE_SERVICE_ACCOUNT_EMAIL"),
+        private_key: (await getSecret("GOOGLE_PRIVATE_KEY")).replace(/\\n/g, '\n')
+      },
+      scopes: ["https://www.googleapis.com/auth/spreadsheets.readonly"]
     });
 
-    const resultado = await respuesta.json();
+    const sheets = google.sheets({ version: "v4", auth });
+    const spreadsheetId = await getSecret("SPREADSHEET_ID_TOKENS");
+    const range = "CodigosInstitucion!A2:F"; // Incluye columna F (correo_sos)
 
-    // Si no está activo o no hay licencias, bloquear acceso
-    if (!resultado.acceso) {
-      return res.status(403).json({ acceso: false, motivo: "Código inactivo o sin licencias" });
+    const { data } = await sheets.spreadsheets.values.get({ spreadsheetId, range });
+    const fila = data.values.find(row => row[0] === codigo);
+
+    if (!fila) {
+      return res.json({ acceso: false });
     }
 
-    // Si ya está registrado, pero sigue activo
-    if (yaRegistrado) {
-      return res.status(200).json({
-        acceso: true,
-        institucion: resultado.institucion || "desconocida"
-      });
+    const nombreInstitucion = fila[1];
+    const licenciasTotales = parseInt(fila[2]) || 0;
+    const licenciasUsadas = parseInt(fila[3]) || 0;
+    const activo = (fila[4] || "").toLowerCase() === "sí";
+    const correoSOS = fila[5] || "";
+
+    if (!activo) {
+      return res.json({ acceso: false, motivo: "Código inactivo o sin licencias" });
     }
 
-    // Si es nuevo y válido, continuar normalmente
-    return res.status(200).json(resultado);
+    if (!yaRegistrado && licenciasUsadas >= licenciasTotales) {
+      return res.json({ acceso: false, motivo: "Código inactivo o sin licencias" });
+    }
+
+    return res.json({
+      acceso: true,
+      institucion: nombreInstitucion,
+      correoSOS: correoSOS
+    });
 
   } catch (error) {
-    console.error("Error al llamar a Apps Script:", error);
-    return res.status(500).json({ error: 'Error en el servidor' });
+    console.error("Error en verificar-codigo:", error);
+    return res.status(500).json({ error: "Error interno del servidor" });
   }
 }
+
