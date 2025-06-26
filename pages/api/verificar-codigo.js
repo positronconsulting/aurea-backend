@@ -11,7 +11,7 @@ export default async function handler(req, res) {
 
   // Parámetros específicos de tu configuración:
   const SHEET_ID = "1hES4WSal9RLQOX2xAyLM2PKC9WP07Oc48rP5wVjCqAE";
-  const API_KEY = "AIzaSyBs1d09czmUB451Kr6V4ieadnI2JnpkJGk";
+  const API_KEY = process.env.GOOGLE_SHEETS_API_KEY;
   const SHEET_NAME = "CodigosInstitucion";
 
   try {
