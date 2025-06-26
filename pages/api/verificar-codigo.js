@@ -14,42 +14,35 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Faltan parámetros" });
     }
 
-    const API_KEY = process.env.GOOGLE_SHEETS_API_KEY;
-    const SHEET_ID = "1hES4WSal9RLQOX2xAyLM2PKC9WP07Oc48rP5wVjCqAE";
-    const SHEET_NAME = "CodigosInstitucion";
+    const endpointAppsScript = "https://script.google.com/macros/s/AKfycbxwyYwe7sal2eGb4nZeMv9qx_o2dkMO5iN6rpMfnmNjL3TYGuSAgvXqncL7u0kJH2mFJw/exec";
 
-    const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${SHEET_NAME}!A2:F?key=${API_KEY}`;
-    console.log("🔗 Conectando a Google Sheets con URL:", url);
+    const respuesta = await fetch(endpointAppsScript, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ codigo, email, yaRegistrado })
+    });
 
-    const respuesta = await fetch(url);
     if (!respuesta.ok) {
       const errorText = await respuesta.text();
-      console.error("❌ Error al conectar con Google Sheets:", errorText);
-      throw new Error("Error al conectar con Google Sheets");
+      console.error("❌ Error al conectar con Google Apps Script:", errorText);
+      throw new Error("Error al conectar con el verificador");
     }
 
-    const data = await respuesta.json();
-    console.log("📄 Datos recibidos de Google Sheets:", data);
+    const resultado = await respuesta.json();
+    console.log("🔒 Resultado desde Apps Script:", resultado);
 
-    const fila = data.values.find(row => row[0] === codigo);
-    if (!fila) {
-      console.log("⚠️ Código no encontrado en Google Sheets:", codigo);
-      return res.json({ acceso: false, motivo: "Código no encontrado" });
+    if (!resultado.acceso) {
+      return res.json({
+        acceso: false,
+        motivo: resultado.motivo || "Código inválido o sin acceso"
+      });
     }
 
-    const [ , institucion, activoRaw, licTotStr, licUsadasStr, correoSOS ] = fila;
-    const licenciasTotales = parseInt(licTotStr) || 0;
-    const licenciasUsadas = parseInt(licUsadasStr) || 0;
-    const activo = (activoRaw || "").toLowerCase() === "sí";
-
-    console.log("✅ Datos procesados:", { institucion, activo, licenciasTotales, licenciasUsadas, yaRegistrado });
-
-    if (!activo) return res.json({ acceso: false, motivo: "Código inactivo o sin licencias" });
-    if (!yaRegistrado && licenciasUsadas >= licenciasTotales) {
-      return res.json({ acceso: false, motivo: "Código inactivo o sin licencias" });
-    }
-
-    return res.json({ acceso: true, institucion, correoSOS });
+    return res.json({
+      acceso: true,
+      institucion: resultado.institucion || "sin nombre",
+      correoSOS: resultado.correoSOS || ""
+    });
 
   } catch (error) {
     console.error("🧨 Error en verificar-codigo:", error);
