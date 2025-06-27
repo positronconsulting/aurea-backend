@@ -73,7 +73,7 @@ TEMA: una sola palabra que describa el tema principal del mensaje del usuario (p
     const data = await response.json();
     const raw = data.choices?.[0]?.message?.content || 'Lo siento, no pude procesar tu mensaje.';
     const [respuestaLimpia, analisis] = raw.split('---');
-    const respuesta = respuestaLimpia.trim();
+    const respuesta = raw.trim(); // Muestra todo, incluida la parte de análisis (SOS y TEMA)
 
     const inputTokens = data.usage?.prompt_tokens || 0;
     const outputTokens = data.usage?.completion_tokens || 0;
