@@ -99,7 +99,7 @@ TEMA: una sola palabra que describa el tema principal del mensaje del usuario (p
     }
 
     // Actualizar contador de temas por institución
-    await fetch("https://www.positronconsulting.com/_functions/contarTema", {
+    await fetch("https://www.positronconsulting.com/_functions-dev/contarTema", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ institucion, tema })
@@ -112,7 +112,7 @@ TEMA: una sola palabra que describa el tema principal del mensaje del usuario (p
         .map(t => `${t.role}: ${t.content}`)
         .join("\n");
 
-      await fetch("https://www.positronconsulting.com/_functions/alertaSOS", {
+      await fetch("https://www.positronconsulting.com/_functions-dev/alertaSOS", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
