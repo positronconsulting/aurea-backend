@@ -140,7 +140,7 @@ TEMA: una sola palabra que describa el tema principal del mensaje del usuario (p
       })
     });
 
-    return new Response(JSON.stringify({ respuesta }), {
+    return new Response(JSON.stringify({ respuesta, sos: esSOS }), {
       status: 200,
       headers: {
         'Content-Type': 'application/json',
