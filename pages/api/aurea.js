@@ -45,8 +45,8 @@ Para mantener continuidad, recuerda solo lo esencial. No repitas todo ni respond
 
 Al final de tu respuesta, escribe tres guiones (---), siempre. 
 
-Después de los guiones, IMPORTANTE: Si detectas señales de crisis emocional, burnout, ideación suicida, peligro físico, encierro, acoso, bullying o trastornos alimenticios graves, escribe exactamente: SOS. Si no detectas señales de este tipo, escribe exactamente: OK. 
-En la siguiente línea, escribe el tema emocional principal detectado en una sola palabra en minúsculas (por ejemplo: tristeza, ansiedad, culpa, miedo, duelo, enojo, estrés). Si no hay un tema claro, escribe “ninguno”.`
+Después de los guiones, IMPORTANTE: Si detectas que se muestran señales o se usan palabras literales de crisis emocional, suicidio, burnout, peligro, peligro físico, encierro, acoso, bullying, bulimia, anoerxia o trastornos alimenticios, escribe exactamente: SOS. Si no detectas señales de este tipo, escribe exactamente: OK. 
+En la siguiente línea, escribe el tema emocional principal detectado en una sola palabra en minúsculas (por ejemplo: suicidio, tristeza, ansiedad, culpa, miedo, duelo, enojo, estrés). Si no hay un tema claro, escribe “ninguno”.`
         },
         ...history,
         { role: 'user', content: mensaje },
