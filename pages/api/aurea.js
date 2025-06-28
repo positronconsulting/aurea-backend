@@ -43,15 +43,13 @@ Responde solo sobre temas de salud emocional. Si el usuario pide algo fuera de t
 
 Para mantener continuidad, recuerda solo lo esencial. No repitas todo ni respondas en exceso. Limita tus respuestas a un máximo de 1000 caracteres.
 
-IMPORTANTE: Si detectas señales de crisis emocional, ideación suicida, peligro físico, encierro, acoso, bullying o trastornos alimenticios graves, escribe “SOS” al inicio de tu respuesta y luego continúa normalmente. Si no detectas señales de este tipo, no pongas “SOS”.
+Al final de tu respuesta, escribe tres guiones (---), siempre. 
 
-Al final de tu respuesta, después de tres guiones (---), escribe el tema emocional principal detectado en una sola palabra en minúsculas (por ejemplo: tristeza, ansiedad, culpa, miedo, duelo, enojo, estrés). Si no hay un tema claro, escribe “ninguno”.`
+Después de los guiones, IMPORTANTE: Si detectas señales de crisis emocional, burnout, ideación suicida, peligro físico, encierro, acoso, bullying o trastornos alimenticios graves, escribe exactamente: SOS. Si no detectas señales de este tipo, escribe exactamente: OK. 
+En la siguiente línea, escribe el tema emocional principal detectado en una sola palabra en minúsculas (por ejemplo: tristeza, ansiedad, culpa, miedo, duelo, enojo, estrés). Si no hay un tema claro, escribe “ninguno”.`
         },
         ...history,
-        {
-          role: 'user',
-          content: mensaje,
-        },
+        { role: 'user', content: mensaje },
       ];
 
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -70,10 +68,13 @@ Al final de tu respuesta, después de tres guiones (---), escribe el tema emocio
       const data = await response.json();
       const rawResponse = data.choices?.[0]?.message?.content || 'Lo siento, no pude procesar tu mensaje.';
 
-      // Separar respuesta y tema
-      const [respuestaLimpia, temaExtraido] = rawResponse.split('---');
+      const [respuestaLimpia, metaBloque] = rawResponse.split('---');
+      const metaLíneas = (metaBloque || '').trim().split('\n');
+      const indicadorSOS = metaLíneas[0]?.trim().toLowerCase();
+      const tema = metaLíneas[1]?.trim().toLowerCase() || 'ninguno';
+      const esSOS = indicadorSOS === 'sos';
+
       const respuesta = (respuestaLimpia || '').trim();
-      const tema = (temaExtraido || 'ninguno').trim().toLowerCase();
 
       const inputTokens = data.usage?.prompt_tokens || 0;
       const outputTokens = data.usage?.completion_tokens || 0;
@@ -82,12 +83,10 @@ Al final de tu respuesta, después de tres guiones (---), escribe el tema emocio
 
       history.push({ role: 'user', content: mensaje });
       history.push({ role: 'assistant', content: respuesta });
-
       if (history.length > MAX_TURNS) {
         sessionHistories.set(sessionId, history.slice(-MAX_TURNS));
       }
 
-      // Registrar uso en Google Sheets
       await fetch("https://script.google.com/macros/s/AKfycbwhooKRTdqs-Mnf3oFylF_rE2kM1AMZ_a4XUOEJQmnGew80rYvP72l_wlfgsAtfL6qVSQ/exec", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -101,8 +100,7 @@ Al final de tu respuesta, después de tres guiones (---), escribe el tema emocio
         })
       });
 
-      // Enviar alerta si comienza con SOS
-      if (respuesta.startsWith("SOS")) {
+      if (esSOS) {
         await fetch("https://www.positronconsulting.com/_functions/alertaSOS", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -116,7 +114,7 @@ Al final de tu respuesta, después de tres guiones (---), escribe el tema emocio
         });
       }
 
-      return new Response(JSON.stringify({ respuesta, tema, sos: respuesta.startsWith("SOS") }), {
+      return new Response(JSON.stringify({ respuesta, tema, sos: esSOS }), {
         status: 200,
         headers: {
           'Content-Type': 'application/json',
