@@ -15,7 +15,7 @@ export default async function handler(req, res) {
     }
 
     const endpointAppsScript = "https://script.google.com/macros/s/AKfycbwud2Ts5--RfbwdzqXlX7muclOiasv0J75n71sm1IG5c8KrCJEDAjvJWQez8lNF-i3S_g/exec";
-
+    console.log("📨 Enviando al Apps Script:", { codigo, email, yaRegistrado });
     const respuesta = await fetch(endpointAppsScript, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
