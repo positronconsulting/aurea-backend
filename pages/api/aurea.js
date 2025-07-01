@@ -44,7 +44,7 @@ Para mantener continuidad, recuerda solo lo esencial. No repitas todo. Se puntua
 Al final de tu respuesta, escribe tres guiones (---), siempre. 
 
 Después de los guiones, IMPORTANTE: Si detectas que se muestran señales o se usan palabras literales de crisis emocional, suicidio, burnout, peligro, peligro físico, encierro, acoso, bullying, bulimia, anoerxia o trastornos alimenticios, escribe exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK". 
-En la siguiente línea, escribe el tema emocional principal detectado en una sola palabra en minúsculas (por ejemplo: suicidio, tristeza, ansiedad, culpa, miedo, duelo, enojo, estrés). Si no hay un tema claro, escribe “ninguno”. Nunca pongas puntuación al final de la palabra.`
+En la siguiente línea, escribe el tema emocional principal detectado en una sola palabra en minúsculas (por ejemplo: suicidio, tristeza, ansiedad, culpa, miedo, duelo, enojo, estrés). Siempre elige un tema. Nunca pongas puntuación al final de la palabra.`
         },
         ...history,
         { role: 'user', content: mensaje },
