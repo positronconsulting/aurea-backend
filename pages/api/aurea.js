@@ -83,11 +83,23 @@ Después de tu respuesta, escribe exactamente lo siguiente, en este orden, sin e
       const data = await response.json();
       const rawResponse = data.choices?.[0]?.message?.content || 'Lo siento, no pude procesar tu mensaje.';
 
-      const [respuestaLimpia, metaBloque] = rawResponse.split('---');
-      const metaLíneas = (metaBloque || '').trim().split('\n');
-      const indicadorSOS = metaLíneas[0]?.trim().toLowerCase();
-      const tema = metaLíneas[1]?.trim().toLowerCase() || 'ninguno';
-      const esSOS = indicadorSOS === 'sos';
+     const [respuestaLimpia, metaBloque] = rawResponse.split('---');
+     const metaLíneas = (metaBloque || '').trim().split('\n');
+     const indicadorSOS = metaLíneas[0]?.trim().toLowerCase();
+     const tema = metaLíneas[1]?.trim().toLowerCase() || 'ninguno';
+     const calificacionLine = metaLíneas[2]?.trim() || "";
+
+     let calificacion = null;
+     let confirmado = "";
+
+     if (calificacionLine.includes("/")) {
+      const [temaDetectado, nuevaCalificacion, confirmacion] = calificacionLine.split("/");
+      calificacion = parseInt(nuevaCalificacion);
+      confirmado = confirmacion?.toUpperCase() === "OK" ? "OK" : "NO";
+     }
+
+     const esSOS = indicadorSOS === 'sos';
+
 
       const actualizaciones = metaLíneas.slice(2).map(l => {
         const [tema, nuevaCalificacion, confirmado] = l.split('/');
@@ -157,13 +169,21 @@ Después de tu respuesta, escribe exactamente lo siguiente, en este orden, sin e
         });
       }
 
-      return new Response(JSON.stringify({ respuesta, tema, sos: esSOS }), {
-        status: 200,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': allowedOrigin,
-        },
-      });
+      return new Response(JSON.stringify({
+  	respuesta,
+ 	tema,
+  	sos: esSOS,
+  	calificacion,
+  	confirmado,
+  	fecha: new Date().toISOString().split("T")[0]
+      }), {
+  	status: 200,
+  	headers: {
+    	'Content-Type': 'application/json',
+    	'Access-Control-Allow-Origin': allowedOrigin,
+  	},
+       });
+
 
     } catch (error) {
       console.error("❌ Error interno en AUREA:", error);
