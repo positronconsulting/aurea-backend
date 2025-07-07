@@ -1,5 +1,3 @@
-// pages/api/aurea.js
-
 const sessionHistories = new Map();
 const MAX_TURNS = 6;
 
@@ -16,7 +14,7 @@ export default async function handler(req) {
       headers: {
         'Access-Control-Allow-Origin': allowedOrigin,
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, x-session-id, x-institucion, x-tipo-institucion, x-nombre, x-calificaciones, x-tipo',
+        'Access-Control-Allow-Headers': 'Content-Type, x-session-id, x-institucion, x-tipo',
       },
     });
   }
@@ -26,36 +24,44 @@ export default async function handler(req) {
       const { mensaje } = await req.json();
       const sessionId = req.headers.get('x-session-id') || 'demo';
       const institucion = req.headers.get('x-institucion') || 'desconocida';
-      const tipoInstitucion = req.headers.get('x-tipo-institucion') || 'sin_tipo';
-      const nombre = req.headers.get('x-nombre') || 'usuario';
-      const calificaciones = req.headers.get('x-calificaciones') || '';
+      const tipoInstitucion = req.headers.get('x-tipo') || 'Empresa';
 
       if (!sessionHistories.has(sessionId)) {
         sessionHistories.set(sessionId, []);
       }
+
       const history = sessionHistories.get(sessionId);
 
       const messages = [
         {
           role: 'system',
-          content: `Eres AUREA, un sistema de acompañamiento emocional cálido y sin juicios. Acompañas usando herramientas de la terapia cognitivo conductual, el enfoque neurocognitivo conductual y la psicoterapia Gestalt. Haces preguntas que invitan al autoanálisis. Tu estilo es cercano, claro y humano a pesar de ser sólo un acompañante, no un psicólogo certificado.
+          content: `Eres AUREA, un sistema de acompañamiento emocional cálido, humano y sin juicios. Acompañas usando herramientas de la Terapia Cognitivo Conductual, el enfoque neurocognitivo conductual y la psicoterapia Gestalt. Haces preguntas que invitan al autoanálisis y la introspección. Tu estilo es cercano, claro y compasivo, aunque no eres psicólogo ni das diagnósticos ni consejos médicos.
 
-Tu objetivo es ayudar a las personas a explorar lo que sienten, identificar emociones y reflexionar sobre su bienestar. No das diagnósticos ni consejos médicos.
+Tu objetivo es ayudar a las personas a explorar lo que sienten, identificar emociones, reflexionar sobre su bienestar y avanzar en su proceso personal. Usa solo temas de salud emocional.
 
-Responde solo sobre temas de salud emocional. Si el usuario pide algo fuera de tu rol, indícalo con respeto.
+Si el usuario pide algo fuera de tu rol, recuérdale con respeto que solo puedes acompañar emocionalmente.
 
-Para mantener continuidad, recuerda solo lo esencial. No repitas todo. Sé puntual y limita tus respuestas a un máximo de 1000 caracteres.
+Mantén continuidad con sus respuestas previas, pero sé puntual. No repitas todo. Limita tus respuestas a un máximo de 1000 caracteres.
 
-Estás hablando con ${nombre} y estas son sus calificaciones: ${calificaciones}. Analiza su mensaje usando el DSM-5-TR, ICD-11, APA, NIH/NIMH, protocolos de TCC y la guía WHO mhGAP.
+Estás hablando con **${nombre}** y estas son sus calificaciones actuales: **${calificaciones}**.
 
-Elige solo uno de los temas enviados en las calificaciones como tema principal del mensaje. Haz preguntas de seguimiento usando técnicas de terapia cognitivo conductual que te permitan decidir si puedes cambiar la calificación.
+Analiza el mensaje recibido con base en:
+DSM-5-TR, ICD-11, APA, NIH/NIMH, protocolos de Terapia Cognitivo Conductual y la guía WHO mhGAP.
 
-Al final de tu respuesta, escribe tres guiones (---)
+Tu tarea es:
+1. Detectar cuál de los temas enviados es el más relevante con base en las palabras textuales y el contexto emocional.
+2. Personalizar tu respuesta basándote en ese tema y sus calificaciones.
+3. Hacer una pregunta de seguimiento que te ayude a decidir si puedes ajustar la calificación de ese tema, usando técnicas de TCC.
 
-Después de los guiones:
-1. Si detectas señales o palabras literales relacionadas a crisis emocional, suicidio, burnout, peligro, peligro físico, encierro, acoso, bullying, bulimia, anorexia o trastornos alimenticios, escribe exactamente: "SOS". Si no, escribe exactamente: "OK".
-2. En la siguiente línea, escribe el tema detectado en una sola palabra en minúsculas.
-3. En la tercera línea, si puedes cambiar la calificación, escribe: tema/nuevaCalificación/OK. Si aún no puedes, pero lo harás con más información, escribe: tema/nuevaCalificación/NO.`
+---
+
+Después de tu respuesta, escribe exactamente lo siguiente, en este orden, sin explicaciones ni símbolos adicionales:
+
+1. `"SOS"` si detectas señales o palabras literales relacionadas con: crisis emocional, suicidio, burnout, peligro físico, encierro, acoso, bullying, bulimia, anorexia o trastornos alimenticios. Si no detectas ninguna, escribe exactamente: `"OK"`
+2. En la siguiente línea, escribe el **tema emocional principal** detectado (una sola palabra en minúsculas, sin puntuación al final).
+3. En una o varias líneas siguientes, si puedes cambiar la calificación, escribe: `tema/nuevaCalificación/OK`  
+   Si necesitas más información antes de cambiarla, escribe: `tema/nuevaCalificación/NO`
+`
         },
         ...history,
         { role: 'user', content: mensaje },
@@ -76,24 +82,42 @@ Después de los guiones:
 
       const data = await response.json();
       const rawResponse = data.choices?.[0]?.message?.content || 'Lo siento, no pude procesar tu mensaje.';
+
       const [respuestaLimpia, metaBloque] = rawResponse.split('---');
       const metaLíneas = (metaBloque || '').trim().split('\n');
       const indicadorSOS = metaLíneas[0]?.trim().toLowerCase();
       const tema = metaLíneas[1]?.trim().toLowerCase() || 'ninguno';
-      const calificacionRaw = metaLíneas[2]?.trim() || '';
       const esSOS = indicadorSOS === 'sos';
 
-      const respuesta = (respuestaLimpia || '').trim();
+      const actualizaciones = metaLíneas.slice(2).map(l => {
+        const [tema, nuevaCalificacion, confirmado] = l.split('/');
+        return {
+          tema: tema?.trim()?.toLowerCase(),
+          nuevaCalificacion: parseInt(nuevaCalificacion),
+          confirmado: confirmado?.trim()
+        };
+      }).filter(e => e.tema && e.nuevaCalificacion);
 
-      let calificacion = null;
-      let confirmado = "";
-      if (calificacionRaw.includes("/")) {
-        const [temaCalif, valor, flag] = calificacionRaw.split('/');
-        if (temaCalif && valor && flag) {
-          calificacion = parseInt(valor.trim());
-          confirmado = flag.trim();
-        }
+      const fecha = new Date().toISOString().split("T")[0];
+
+      // Enviar actualizaciones a Google Sheets
+      for (const act of actualizaciones) {
+        await fetch("https://script.google.com/macros/s/AKfycbx5ZkBinF7aYeo2uskXiPTM8m6lHa6BRi1MslMc76m9FPiKdUkEDkbvEKh9fLVVWAMbWg/exec", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            correo: sessionId,
+            institucion,
+            tipoInstitucion,
+            tema: act.tema,
+            nuevaCalificacion: act.nuevaCalificacion,
+            confirmado: act.confirmado,
+            fecha
+          })
+        });
       }
+
+      const respuesta = (respuestaLimpia || '').trim();
 
       const inputTokens = data.usage?.prompt_tokens || 0;
       const outputTokens = data.usage?.completion_tokens || 0;
@@ -119,14 +143,21 @@ Después de los guiones:
         })
       });
 
-      return new Response(JSON.stringify({
-        respuesta,
-        tema,
-        sos: esSOS,
-        calificacion,
-        confirmado,
-        fecha: new Date().toISOString().split("T")[0]
-      }), {
+      if (esSOS) {
+        await fetch("https://www.positronconsulting.com/_functions/alertaSOS", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            correoUsuario: sessionId,
+            institucion,
+            mensajeUsuario: mensaje,
+            respuestaAurea: respuesta,
+            temaDetectado: tema
+          })
+        });
+      }
+
+      return new Response(JSON.stringify({ respuesta, tema, sos: esSOS }), {
         status: 200,
         headers: {
           'Content-Type': 'application/json',
@@ -135,6 +166,7 @@ Después de los guiones:
       });
 
     } catch (error) {
+      console.error("❌ Error interno en AUREA:", error);
       return new Response(JSON.stringify({ error: 'Error interno del servidor' }), {
         status: 500,
         headers: {
@@ -153,3 +185,4 @@ Después de los guiones:
     },
   });
 }
+
