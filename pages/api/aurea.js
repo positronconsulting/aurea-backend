@@ -1,147 +1,155 @@
-import { fetch } from 'wix-fetch';
-import { local } from 'wix-storage';
-import wixLocation from 'wix-location';
-import wixWindow from 'wix-window';
-import { post_alertaSOS } from 'backend/alertaSOS';
-import { post_contarTema } from 'backend/contarTema';
-import { post_actualizarPerfil } from 'backend/perfil';
+// pages/api/aurea.js
 
-$w.onReady(function () {
-  const sessionId = local.getItem("correo");
-  let institucion = local.getItem("institucion");
+const sessionHistories = new Map();
+const MAX_TURNS = 6;
 
-  if (!sessionId || !institucion) {
-    $w("#respuestaAurea").text = "No tienes acceso autorizado. Por favor, inicia sesión primero.";
-    $w("#inputMensaje").disable();
-    $w("#botonEnviar").disable();
-    return;
+export const config = {
+  runtime: 'edge',
+};
+
+export default async function handler(req) {
+  const allowedOrigin = 'https://www.positronconsulting.com';
+
+  if (req.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        'Access-Control-Allow-Origin': allowedOrigin,
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, x-session-id, x-institucion, x-tipo-institucion, x-nombre, x-calificaciones',
+      },
+    });
   }
 
-  const historialMensajes = [];
-
-  $w("#botonEnviar").onClick(async () => {
-    const mensaje = $w("#inputMensaje").value;
-
-    if (!mensaje) {
-      $w("#respuestaAurea").text = "Por favor, escribe algo antes de enviar.";
-      return;
-    }
-
-    $w("#respuestaAurea").text = "Procesando...";
-    $w("#inputMensaje").value = "";
-
+  if (req.method === 'POST') {
     try {
-      const response = await fetch("https://aurea-backend-two.vercel.app/api/aurea", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-session-id": sessionId,
-          "x-institucion": institucion
+      const { mensaje } = await req.json();
+      const sessionId = req.headers.get('x-session-id') || 'demo';
+      const institucion = req.headers.get('x-institucion') || 'desconocida';
+      const tipoInstitucion = req.headers.get('x-tipo-institucion') || 'sin_tipo';
+      const nombre = req.headers.get('x-nombre') || 'usuario';
+      const calificaciones = req.headers.get('x-calificaciones') || '';
+
+      if (!sessionHistories.has(sessionId)) {
+        sessionHistories.set(sessionId, []);
+      }
+      const history = sessionHistories.get(sessionId);
+
+      const messages = [
+        {
+          role: 'system',
+          content: `Eres AUREA, un sistema de acompañamiento emocional cálido y sin juicios. Acompañas usando herramientas de la terapia cognitivo conductual, el enfoque neurocognitivo conductual y la psicoterapia Gestalt. Haces preguntas que invitan al autoanálisis. Tu estilo es cercano, claro y humano a pesar de ser sólo un acompañante, no un psicólogo certificado.
+
+Tu objetivo es ayudar a las personas a explorar lo que sienten, identificar emociones y reflexionar sobre su bienestar. No das diagnósticos ni consejos médicos.
+
+Responde solo sobre temas de salud emocional. Si el usuario pide algo fuera de tu rol, indícalo con respeto.
+
+Para mantener continuidad, recuerda solo lo esencial. No repitas todo. Sé puntual y limita tus respuestas a un máximo de 1000 caracteres.
+
+Estás hablando con ${nombre} y estas son sus calificaciones: ${calificaciones}. Analiza su mensaje usando el DSM-5-TR, ICD-11, APA, NIH/NIMH, protocolos de TCC y la guía WHO mhGAP.
+
+Elige solo uno de los temas enviados en las calificaciones como tema principal del mensaje. Haz preguntas de seguimiento usando técnicas de terapia cognitivo conductual que te permitan decidir si puedes cambiar la calificación.
+
+Al final de tu respuesta, escribe tres guiones (---)
+
+Después de los guiones:
+1. Si detectas señales o palabras literales relacionadas a crisis emocional, suicidio, burnout, peligro, peligro físico, encierro, acoso, bullying, bulimia, anorexia o trastornos alimenticios, escribe exactamente: "SOS". Si no, escribe exactamente: "OK".
+2. En la siguiente línea, escribe el tema detectado en una sola palabra en minúsculas.
+3. En la tercera línea, si puedes cambiar la calificación, escribe: tema/nuevaCalificación/OK. Si aún no puedes, pero lo harás con más información, escribe: tema/nuevaCalificación/NO.`
         },
-        body: JSON.stringify({ mensaje })
+        ...history,
+        { role: 'user', content: mensaje },
+      ];
+
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o',
+          temperature: 0.8,
+          messages,
+        }),
       });
 
-      if (!response.ok) throw new Error("No se pudo conectar con el servidor");
-
       const data = await response.json();
-      console.log("🧪 Data del backend:", data);
-      const respuesta = data.respuesta || "Sin respuesta del servidor.";
-      const temaDetectado = data.tema || "sin_tema";
-      const calificacion = data.calificacion || null;
-      const confirmado = data.confirmado || "";
-      const fecha = data.fecha || new Date().toISOString().split("T")[0];
-      const tipoInstitucion = local.getItem("tipoInstitucion") || "sin_tipo";
-      const esSOS = data.sos === true;
+      const rawResponse = data.choices?.[0]?.message?.content || 'Lo siento, no pude procesar tu mensaje.';
+      const [respuestaLimpia, metaBloque] = rawResponse.split('---');
+      const metaLíneas = (metaBloque || '').trim().split('\n');
+      const indicadorSOS = metaLíneas[0]?.trim().toLowerCase();
+      const tema = metaLíneas[1]?.trim().toLowerCase() || 'ninguno';
+      const calificacionRaw = metaLíneas[2]?.trim() || '';
+      const esSOS = indicadorSOS === 'sos';
 
-      console.log("🧠 Tema detectado:", temaDetectado);
-      $w("#respuestaAurea").text = respuesta;
+      const respuesta = (respuestaLimpia || '').trim();
 
-      // Enviar tema a hoja de conteo
-      if (temaDetectado !== "sin_tema") {
-        console.log("📤 Enviando tema a Google Sheets desde backend...");
-        await post_contarTema({ institucion, tema: temaDetectado });
+      let calificacion = null;
+      let confirmado = "";
+      if (calificacionRaw.includes("/")) {
+        const [temaCalif, valor, flag] = calificacionRaw.split('/');
+        if (temaCalif && valor && flag) {
+          calificacion = parseInt(valor.trim());
+          confirmado = flag.trim();
+        }
       }
 
-      // Enviar calificación a perfil si hay datos
-      if (temaDetectado !== "sin_tema" && calificacion && confirmado) {
-        console.log("📥 Enviando actualización de perfil:", {
-          correo: sessionId,
-          institucion,
-          tipoInstitucion,
-          tema: temaDetectado,
-          nuevaCalificacion: calificacion,
-          confirmado,
-          fecha
-        });
+      const inputTokens = data.usage?.prompt_tokens || 0;
+      const outputTokens = data.usage?.completion_tokens || 0;
+      const totalTokens = inputTokens + outputTokens;
+      const costoUSD = ((inputTokens * 0.005) + (outputTokens * 0.015)) / 1000;
 
-        await post_actualizarPerfil({
-          correo: sessionId,
-          institucion,
-          tipoInstitucion,
-          tema: temaDetectado,
-          nuevaCalificacion: calificacion,
-          confirmado,
-          fecha
-        });
+      history.push({ role: 'user', content: mensaje });
+      history.push({ role: 'assistant', content: respuesta });
+      if (history.length > MAX_TURNS) {
+        sessionHistories.set(sessionId, history.slice(-MAX_TURNS));
       }
 
-      // Actualizar historial
-      historialMensajes.push(`user: ${mensaje}`);
-      historialMensajes.push(`assistant: ${respuesta}`);
-      if (historialMensajes.length > 6) {
-        historialMensajes.splice(0, historialMensajes.length - 6);
-      }
-      const historial = historialMensajes.join("\n");
-
-      // Verificar si es alerta SOS
-      if (esSOS) {
-        const resultado = await wixWindow.openLightbox("ConsentimientoAlerta");
-        const autoriza = resultado?.autoriza === true;
-
-        institucion = institucion || "sin_institucion";
-
-        console.log("🧾 Enviando alerta SOS con:", {
-          correoUsuario: sessionId,
+      await fetch("https://script.google.com/macros/s/AKfycbwhooKRTdqs-Mnf3oFylF_rE2kM1AMZ_a4XUOEJQmnGew80rYvP72l_wlfgsAtfL6qVSQ/exec", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId,
           institucion,
-          mensajeUsuario: mensaje,
-          respuestaAurea: respuesta,
-          autoriza,
-          historial,
-          temaDetectado
-        });
+          inputTokens,
+          outputTokens,
+          totalTokens,
+          costoUSD
+        })
+      });
 
-        await post_alertaSOS({
-          correoUsuario: sessionId,
-          institucion,
-          mensajeUsuario: mensaje,
-          respuestaAurea: respuesta,
-          autoriza,
-          correoSOS: local.getItem("correoSOS") || "",
-          historial,
-          temaDetectado
-        });
-      }
+      return new Response(JSON.stringify({
+        respuesta,
+        tema,
+        sos: esSOS,
+        calificacion,
+        confirmado,
+        fecha: new Date().toISOString().split("T")[0]
+      }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': allowedOrigin,
+        },
+      });
 
     } catch (error) {
-      console.error("❌ Error en envío:", error);
-      $w("#respuestaAurea").text = "Ocurrió un error al conectar con el servidor.";
+      return new Response(JSON.stringify({ error: 'Error interno del servidor' }), {
+        status: 500,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': allowedOrigin,
+        },
+      });
     }
-  });
-
-  $w("#botonCerrar").onClick(() => {
-    local.removeItem("correo");
-    local.removeItem("institucion");
-    local.removeItem("loginTime");
-    wixLocation.to("/login");
-  });
-
-  // Expira sesión después de 30 minutos
-  const tiempoMaxInactivo = 30 * 60 * 1000;
-  const inicio = parseInt(local.getItem("loginTime") || "0");
-  if (inicio && Date.now() - inicio > tiempoMaxInactivo) {
-    local.removeItem("correo");
-    local.removeItem("institucion");
-    local.removeItem("loginTime");
-    wixLocation.to("/login");
   }
-});
+
+  return new Response(JSON.stringify({ error: 'Método no permitido' }), {
+    status: 405,
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': allowedOrigin,
+    },
+  });
+}
