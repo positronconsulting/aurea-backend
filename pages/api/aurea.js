@@ -14,7 +14,7 @@ export default async function handler(req) {
       headers: {
         'Access-Control-Allow-Origin': allowedOrigin,
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, x-session-id, x-institucion, x-preguntas',
+        'Access-Control-Allow-Headers': 'Content-Type, x-session-id, x-institucion',
       },
     });
   }
@@ -24,30 +24,27 @@ export default async function handler(req) {
       const { mensaje } = await req.json();
       const sessionId = req.headers.get('x-session-id') || 'demo';
       const institucion = req.headers.get('x-institucion') || 'desconocida';
-      const preguntasExtra = req.headers.get('x-preguntas') || '';
 
       if (!sessionHistories.has(sessionId)) {
         sessionHistories.set(sessionId, []);
       }
-
       const history = sessionHistories.get(sessionId);
 
       const messages = [
         {
           role: 'system',
-          content: `Eres AUREA, un sistema de acompañamiento emocional cálido, humano y sin juicios. Acompañas usando herramientas de la Terapia Cognitivo Conductual, el enfoque neurocognitivo conductual y la psicoterapia Gestalt.
+          content: `Eres AUREA, un sistema de acompañamiento emocional cálido y sin juicios. Acompañas usando herramientas de la terapia cognitivo conductual, el enfoque neurocognitivo conductual y la psicoterapia Gestalt. Haces preguntas que invitan al autoanálisis. Tu estilo es cercano, claro y humano a pesar de ser sólo un acompañante, no un psicólogo certificado.
 
-Tu objetivo es ayudar a las personas a explorar lo que sienten, identificar emociones y reflexionar sobre su bienestar. No das diagnósticos ni consejos médicos. Pero sí haces preguntas que les ayude a introspectar con herramientas de TCC.
+Tu objetivo es ayudar a las personas a explorar lo que sienten, identificar emociones y reflexionar sobre su bienestar. No das diagnósticos ni consejos médicos.
 
-Tu estilo es cercano, claro y compasivo. Si el usuario pide algo fuera de tu rol, indícalo con respeto.
+Responde solo sobre temas de salud emocional. Si el usuario pide algo fuera de tu rol, indícalo con respeto.
 
-Responde solo sobre salud emocional. Limita tu respuesta a un máximo de 1000 caracteres.
+Para mantener continuidad, recuerda solo lo esencial. No repitas todo. Se puntual y limita tus respuestas a un máximo de 1000 caracteres.
 
-Al final de tu respuesta, escribe siempre tres guiones (---)
+Al final de tu respuesta, escribe tres guiones (---), siempre. 
 
-Después, en una nueva línea escribe "SOS" si detectas señales de crisis (suicidio, burnout, peligro, encierro, acoso, bullying o trastornos alimenticios). Si no, escribe "OK".
-
-En la siguiente línea escribe el tema emocional principal detectado (una palabra en minúsculas, como: ansiedad, estrés, miedo, duelo, etc.). Si no hay uno claro, escribe "ninguno".`,
+Después de los guiones, IMPORTANTÍSIMO: Siempre que detectes que se muestran señales o que se usan palabras literales de crisis emocional, suicidio, burnout, peligro, peligro físico, encierro, acoso, bullying, bulimia, anoerxia o trastornos alimenticios, escribe exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK". 
+En la siguiente línea, escribe el tema emocional principal detectado en una sola palabra en minúsculas (por ejemplo: suicidio, tristeza, ansiedad, culpa, miedo, duelo, enojo, estrés). Nunca pongas puntuación al final de la palabra.`
         },
         ...history,
         { role: 'user', content: mensaje },
@@ -61,7 +58,7 @@ En la siguiente línea escribe el tema emocional principal detectado (una palabr
         },
         body: JSON.stringify({
           model: 'gpt-4o',
-          temperature: 0.7,
+          temperature: 0.8,
           messages,
         }),
       });
@@ -75,20 +72,7 @@ En la siguiente línea escribe el tema emocional principal detectado (una palabr
       const tema = metaLíneas[1]?.trim().toLowerCase() || 'ninguno';
       const esSOS = indicadorSOS === 'sos';
 
-      let respuesta = (respuestaLimpia || '').trim();
-
-      // Añadir preguntas sugeridas si existen
-      if (preguntasExtra) {
-        try {
-          const parsed = JSON.parse(preguntasExtra);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            const preguntas = parsed.map(p => `🔹 ${p}`).join('\n');
-            respuesta += `\n\n¿Te gustaría reflexionar también sobre esto?\n${preguntas}`;
-          }
-        } catch (_) {
-          console.warn("⚠️ No se pudieron interpretar las preguntas extra.");
-        }
-      }
+      const respuesta = (respuestaLimpia || '').trim();
 
       const inputTokens = data.usage?.prompt_tokens || 0;
       const outputTokens = data.usage?.completion_tokens || 0;
@@ -101,7 +85,6 @@ En la siguiente línea escribe el tema emocional principal detectado (una palabr
         sessionHistories.set(sessionId, history.slice(-MAX_TURNS));
       }
 
-      // Estadística de tokens
       await fetch("https://script.google.com/macros/s/AKfycbwhooKRTdqs-Mnf3oFylF_rE2kM1AMZ_a4XUOEJQmnGew80rYvP72l_wlfgsAtfL6qVSQ/exec", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -115,16 +98,6 @@ En la siguiente línea escribe el tema emocional principal detectado (una palabr
         })
       });
 
-      // Contar tema si hay
-      if (tema && tema !== "ninguno") {
-        await fetch("https://www.positronconsulting.com/_functions/contarTema", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ institucion, tema })
-        });
-      }
-
-      // Enviar alerta SOS si aplica
       if (esSOS) {
         await fetch("https://www.positronconsulting.com/_functions/alertaSOS", {
           method: "POST",
@@ -148,7 +121,6 @@ En la siguiente línea escribe el tema emocional principal detectado (una palabr
       });
 
     } catch (error) {
-      console.error("❌ Error interno en AUREA:", error);
       return new Response(JSON.stringify({ error: 'Error interno del servidor' }), {
         status: 500,
         headers: {
@@ -167,3 +139,4 @@ En la siguiente línea escribe el tema emocional principal detectado (una palabr
     },
   });
 }
+
