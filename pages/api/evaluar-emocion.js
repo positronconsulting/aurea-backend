@@ -84,7 +84,7 @@ export default async function handler(req) {
 
     const contexto = historial?.slice(-2).join('\n') || '';
     const prompt = `
-Eres un sistema de análisis emocional. Evalúa el siguiente mensaje con contexto y calificaciones actuales.
+Eres un sistema de análisis emocional. Evalúa el siguiente mensaje con palabras literales, contexto y calificaciones actuales.
 
 Mensaje:
 ${mensaje}
@@ -97,7 +97,7 @@ ${calificaciones.map(c => `${c.tema}: ${c.valor}`).join(', ')}
 
 Tu tarea es:
 1. Detectar el tema emocional principal.
-2. Proponer una nueva calificación del 0 al 100 para ese tema.
+2. Proponer una nueva calificación del 0 al 100 para ese tema basado en tests psicológicos como PHQ-9, GAD-7, C-SSRS, ASSIST y AUDIT, IAT, Rosenberg, PSS, PSQI, Escala de soledad de UCLA, SCL-90-R, BAI y BDI-II.
 3. Estimar tu % de certeza en esa asignación.
 4. Sugerir 2 preguntas para confirmar o refinar ese diagnóstico.
 
