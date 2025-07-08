@@ -14,7 +14,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Faltan parámetros" });
     }
 
-    const endpointAppsScript = "https://script.google.com/macros/s/AKfycbz3-rNgSZwN_jK1BhYql7mO__xtTexWs9ryFALXHkdmrLvz3jF7V_teK_vZMCV8mhoV-Q/exec";
+    const endpointAppsScript = "https://script.google.com/macros/s/AKfycbytnZWhbWF5Zz6IbT7_ModkYNDYxCW7YchbsbtypRfQnUAr1zyez9GOXq8SqeuvlrH9fA/exec";
     console.log("📨 Enviando al Apps Script:", { codigo, email, yaRegistrado });
     const respuesta = await fetch(endpointAppsScript, {
       method: "POST",
