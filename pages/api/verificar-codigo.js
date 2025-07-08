@@ -16,6 +16,7 @@ export default async function handler(req, res) {
 
     const endpointAppsScript = "https://script.google.com/macros/s/AKfycbytnZWhbWF5Zz6IbT7_ModkYNDYxCW7YchbsbtypRfQnUAr1zyez9GOXq8SqeuvlrH9fA/exec";
     console.log("📨 Enviando al Apps Script:", { codigo, email, yaRegistrado });
+
     const respuesta = await fetch(endpointAppsScript, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -39,12 +40,11 @@ export default async function handler(req, res) {
     }
 
     return res.json({
-  	acceso: true,
-  	institucion: resultado.institucion || "sin nombre",
-  	correoSOS: resultado.correoSOS || "",
-  	tipoInstitucion: resultado.tipoInstitucion || "NO ME LLEGO LA INFO"
+      acceso: true,
+      institucion: resultado.institucion || "sin nombre",
+      correoSOS: resultado.correoSOS || "",
+      tipoInstitucion: resultado.tipoInstitucion || "sin_tipo"
     });
-
 
   } catch (error) {
     console.error("🧨 Error en verificar-codigo:", error);
