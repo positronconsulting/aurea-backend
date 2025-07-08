@@ -6,10 +6,6 @@ const auth = new google.auth.GoogleAuth({
 
 const SPREADSHEET_ID = '1hES4WSal9RLQOX2xAyLM2PKC9WP07Oc48rP5wVjCqAE'; 
 
-export const config = {
-  runtime: 'edge',
-};
-
 export default async function handler(req) {
   if (req.method !== 'POST') {
     return new Response(JSON.stringify({ error: 'Método no permitido' }), {
