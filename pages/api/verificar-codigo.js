@@ -9,19 +9,24 @@ export default async function handler(req, res) {
   try {
     const { codigo, email, yaRegistrado } = req.body;
 
+    console.log("📥 Datos recibidos:", { codigo, email, yaRegistrado });
+
     if (!codigo || !email) {
       console.log("❌ Faltan parámetros:", { codigo, email });
       return res.status(400).json({ error: "Faltan parámetros" });
     }
 
     const endpointAppsScript = "https://script.google.com/macros/s/AKfycbytnZWhbWF5Zz6IbT7_ModkYNDYxCW7YchbsbtypRfQnUAr1zyez9GOXq8SqeuvlrH9fA/exec";
-    console.log("📨 Enviando al Apps Script:", { codigo, email, yaRegistrado });
+
+    console.log("📨 Enviando al Apps Script:", endpointAppsScript);
 
     const respuesta = await fetch(endpointAppsScript, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ codigo, email, yaRegistrado })
     });
+
+    console.log("📬 Respuesta recibida:", respuesta.status, respuesta.statusText);
 
     if (!respuesta.ok) {
       const errorText = await respuesta.text();
@@ -47,8 +52,9 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
-    console.error("🧨 Error en verificar-codigo:", error);
+    console.error("🧨 Error en verificar-codigo:", error.message);
     return res.status(500).json({ error: "Error interno del servidor" });
   }
 }
+
 
