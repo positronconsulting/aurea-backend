@@ -42,7 +42,7 @@ ti default async function handler(req, res) {
   	acceso: true,
   	institucion: resultado.institucion || "sin nombre",
   	correoSOS: resultado.correoSOS || "",
-  	tipoInstitucion: resultado.tipoInstitucion || "NO ME LLEGO LA INFO!"
+  	tipoInstitucion: resultado.tipoInstitucion || "NO ME LLEGO LA INFO";
     });
 
 
