@@ -1,9 +1,3 @@
-// pages/api/aurea.js
-
-import { OpenAI } from "openai";
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
 const sessionHistories = new Map();
 const MAX_TURNS = 6;
 
@@ -55,83 +49,41 @@ DSM-5-TR, ICD-11, APA, NIH/NIMH, protocolos de Terapia Cognitivo Conductual y la
 Tu tarea es:
 1. Detectar cuál de los temas enviados es el más relevante con base en las palabras textuales y el contexto emocional.
 2. Personalizar tu respuesta basándote en ese tema y sus calificaciones.
-3. Hacer una pregunta de seguimiento que te ayude a decidir si puedes ajustar la calificación de ese tema, usando técnicas de TCC.
+3. Hacer una pregunta de seguimiento basada en el mejor test psicológico al que tengas acceso que te ayude a ajustar la calificación de ese tema y usando técnicas de TCC.
 
----
+Al terminar tu respuesta siempre escribe "---".
 
-Después de tu respuesta, escribe exactamente lo siguiente, en este orden, sin explicaciones ni símbolos adicionales:
+Después escribe exactamente lo siguiente, en este orden, sin explicaciones ni símbolos adicionales:
 
 1. "SOS" si detectas señales o palabras literales relacionadas con: crisis emocional, suicidio, burnout, peligro físico, encierro, acoso, bullying o trastornos alimenticios. Si no detectas ninguna, escribe exactamente: "OK".
 2. En la siguiente línea, escribe el tema emocional principal detectado (una sola palabra en minúsculas, sin puntuación al final).
-3. En una o varias líneas siguientes, vas a asignar, siempre, una calificación del 0 al 100, al o los temas que se están tratando basado en el mejor test para ese tema, como puede ser PHQ-9, GAD-7, C-SSRS, ASSIST y AUDIT, IAT, Rosenberg, PSS, PSQI, Escala de soledad de UCLA, SCL-90-R, BAI y BDI-II. Puedes decidir si es suficiente información para confirmar la calificación. En caso de que sí lo sea, escribe: tema/nuevaCalificación/OK.  
-Si necesitas más información antes de confirmarla, escribe: tema/nuevaCalificación/NO y haz preguntas que te ayuden a confirmar el tema.`
+3. En una o varias líneas siguientes, vas a asignar, siempre, una calificación del 0 al 100, al o los temas que se están tratando basado en el mejor test para ese tema, como puede ser PHQ-9, GAD-7, C-SSRS, ASSIST y AUDIT, IAT, Rosenberg, PSS, PSQI, Escala de soledad de UCLA, SCL-90-R, BAI y BDI-II. Considerando que quizás sea la única interacción con esta persona, ¿puedes decidir si es suficiente información para confirmar la calificación? En caso de que sí lo sea, escribe: tema/nuevaCalificación/OK.  
+Si necesitas más información antes de confirmarla, escribe: tema/nuevaCalificación/NO`,
         },
         ...history,
         { role: 'user', content: mensaje },
       ];
 
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json',
+          "Content-Type": "application/json",
           Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         },
         body: JSON.stringify({
-          model: 'gpt-4o',
-          temperature: 0.8,
+          model: "gpt-4",
           messages,
         }),
       });
 
       const data = await response.json();
-      const rawResponse = data.choices?.[0]?.message?.content || 'Lo siento, no pude procesar tu mensaje.';
+      const respuestaLimpia = data.choices?.[0]?.message?.content || "";
+      const respuesta = respuestaLimpia.trim();
 
-      const [respuestaLimpia, metaBloque] = rawResponse.split('---');
-      const metaLíneas = (metaBloque || '').trim().split('\n');
-
-      const indicadorSOS = metaLíneas[0]?.trim().toLowerCase();
-      const tema = metaLíneas[1]?.trim().toLowerCase() || 'ninguno';
-      const calificacionLine = metaLíneas[2]?.trim() || "";
-
-      let calificacion = null;
-      let confirmado = "";
-
-      if (calificacionLine.includes("/")) {
-        const [temaDetectado, nuevaCalificacion, confirmacion] = calificacionLine.split("/");
-        calificacion = parseInt(nuevaCalificacion);
-        confirmado = confirmacion?.toUpperCase() === "OK" ? "OK" : "NO";
-      }
-
-      const esSOS = indicadorSOS === 'sos';
-
-      const actualizaciones = metaLíneas.slice(2).map(l => {
-        const [tema, nuevaCalificacion, confirmado] = l.split('/');
-        return {
-          tema: tema?.trim()?.toLowerCase(),
-          nuevaCalificacion: parseInt(nuevaCalificacion),
-          confirmado: confirmado?.trim()
-        };
-      }).filter(e => e.tema && e.nuevaCalificacion);
-
-      const fecha = new Date().toISOString().split("T")[0];
-
-      for (const act of actualizaciones) {
-        await fetch("https://script.google.com/macros/s/AKfycbx5ZkBinF7aYeo2uskXiPTM8m6lHa6BRi1MslMc76m9FPiKdUkEDkbvEKh9fLVVWAMbWg/exec", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            correo: sessionId,
-            institucion,
-            tipoInstitucion,
-            tema: act.tema,
-            nuevaCalificacion: act.nuevaCalificacion,
-            confirmado: act.confirmado,
-            fecha
-          })
-        });
-      }
-
-      const respuesta = (respuestaLimpia || '').trim();
+      const [_, bloque, tema, calificacionRaw] = respuesta.match(/---\s*(OK|SOS)\s*(\w+)\s*(.+)/s) || [];
+      const calificacion = calificacionRaw?.split("/")?.[1] || null;
+      const confirmado = calificacionRaw?.split("/")?.[2] || null;
+      const esSOS = bloque === "SOS";
 
       const inputTokens = data.usage?.prompt_tokens || 0;
       const outputTokens = data.usage?.completion_tokens || 0;
@@ -144,18 +96,23 @@ Si necesitas más información antes de confirmarla, escribe: tema/nuevaCalifica
         sessionHistories.set(sessionId, history.slice(-MAX_TURNS));
       }
 
-      await fetch("https://script.google.com/macros/s/AKfycbwhooKRTdqs-Mnf3oFylF_rE2kM1AMZ_a4XUOEJQmnGew80rYvP72l_wlfgsAtfL6qVSQ/exec", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId,
-          institucion,
-          inputTokens,
-          outputTokens,
-          totalTokens,
-          costoUSD
-        })
-      });
+      const fecha = new Date().toISOString().split("T")[0];
+
+      if (tema && calificacion && confirmado) {
+        await fetch("https://script.google.com/macros/s/AKfycbx5ZkBinF7aYeo2uskXiPTM8m6lHa6BRi1MslMc76m9FPiKdUkEDkbvEKh9fLVVWAMbWg/exec", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            correo: sessionId,
+            institucion,
+            tipoInstitucion,
+            tema,
+            nuevaCalificacion: calificacion,
+            confirmado,
+            fecha
+          })
+        });
+      }
 
       if (esSOS) {
         await fetch("https://www.positronconsulting.com/_functions/alertaSOS", {
@@ -171,13 +128,26 @@ Si necesitas más información antes de confirmarla, escribe: tema/nuevaCalifica
         });
       }
 
+      await fetch("https://script.google.com/macros/s/AKfycbwhooKRTdqs-Mnf3oFylF_rE2kM1AMZ_a4XUOEJQmnGew80rYvP72l_wlfgsAtfL6qVSQ/exec", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId,
+          institucion,
+          inputTokens,
+          outputTokens,
+          totalTokens,
+          costoUSD
+        })
+      });
+
       return new Response(JSON.stringify({
         respuesta,
         tema,
         sos: esSOS,
         calificacion,
         confirmado,
-        fecha: new Date().toISOString().split("T")[0]
+        fecha
       }), {
         status: 200,
         headers: {
