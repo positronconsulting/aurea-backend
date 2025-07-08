@@ -1,4 +1,4 @@
-ti default async function handler(req, res) {
+export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "https://www.positronconsulting.com");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -42,7 +42,7 @@ ti default async function handler(req, res) {
   	acceso: true,
   	institucion: resultado.institucion || "sin nombre",
   	correoSOS: resultado.correoSOS || "",
-  	tipoInstitucion: resultado.tipoInstitucion || "NO ME LLEGO LA INFO";
+  	tipoInstitucion: resultado.tipoInstitucion || "NO ME LLEGO LA INFO"
     });
 
 
