@@ -39,10 +39,12 @@ export default async function handler(req, res) {
     }
 
     return res.json({
-      acceso: true,
-      institucion: resultado.institucion || "sin nombre",
-      correoSOS: resultado.correoSOS || ""
+  	acceso: true,
+  	institucion: resultado.institucion || "sin nombre",
+  	correoSOS: resultado.correoSOS || "",
+  	tipoInstitucion: resultado.tipoInstitucion || "sin_tipo"
     });
+
 
   } catch (error) {
     console.error("🧨 Error en verificar-codigo:", error);
