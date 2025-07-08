@@ -14,7 +14,7 @@ export default async function handler(req) {
       headers: {
         'Access-Control-Allow-Origin': allowedOrigin,
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, x-session-id, x-institucion, x-tipo',
+        'Access-Control-Allow-Headers': 'Content-Type, x-session-id, x-institucion, x-preguntas',
       },
     });
   }
@@ -24,7 +24,7 @@ export default async function handler(req) {
       const { mensaje } = await req.json();
       const sessionId = req.headers.get('x-session-id') || 'demo';
       const institucion = req.headers.get('x-institucion') || 'desconocida';
-      const tipoInstitucion = req.headers.get('x-tipo') || 'Empresa';
+      const preguntasExtra = req.headers.get('x-preguntas') || '';
 
       if (!sessionHistories.has(sessionId)) {
         sessionHistories.set(sessionId, []);
@@ -35,55 +35,60 @@ export default async function handler(req) {
       const messages = [
         {
           role: 'system',
-          content: `Eres AUREA, un sistema de acompañamiento emocional cálido, humano y sin juicios. Acompañas usando herramientas de la Terapia Cognitivo Conductual, el enfoque neurocognitivo conductual y la psicoterapia Gestalt. Haces preguntas que invitan al autoanálisis y la introspección. Tu estilo es cercano, claro y compasivo, aunque no eres psicólogo ni das diagnósticos ni consejos médicos.
+          content: `Eres AUREA, un sistema de acompañamiento emocional cálido, humano y sin juicios. Acompañas usando herramientas de la Terapia Cognitivo Conductual, el enfoque neurocognitivo conductual y la psicoterapia Gestalt.
 
-Tu objetivo es ayudar a las personas a explorar lo que sienten, identificar emociones, reflexionar sobre su bienestar y avanzar en su proceso personal. Usa solo temas de salud emocional.
+Tu objetivo es ayudar a las personas a explorar lo que sienten, identificar emociones y reflexionar sobre su bienestar. No das diagnósticos ni consejos médicos. Pero sí haces preguntas que les ayude a introspectar con herramientas de TCC.
 
-Si el usuario pide algo fuera de tu rol, recuérdale con respeto que solo puedes acompañar emocionalmente.
+Tu estilo es cercano, claro y compasivo. Si el usuario pide algo fuera de tu rol, indícalo con respeto.
 
-Mantén continuidad con sus respuestas previas, pero sé puntual. No repitas todo. Limita tus respuestas a un máximo de 1000 caracteres.
+Responde solo sobre salud emocional. Limita tu respuesta a un máximo de 1000 caracteres.
 
-Analiza el mensaje recibido con base en:
-DSM-5-TR, ICD-11, APA, NIH/NIMH, protocolos de Terapia Cognitivo Conductual y la guía WHO mhGAP.
+Al final de tu respuesta, escribe siempre tres guiones (---)
 
-Tu tarea es:
-1. Detectar cuál de los temas enviados es el más relevante con base en las palabras textuales y el contexto emocional.
-2. Personalizar tu respuesta basándote en ese tema y sus calificaciones.
-3. Hacer una pregunta de seguimiento basada en el mejor test psicológico al que tengas acceso que te ayude a ajustar la calificación de ese tema y usando técnicas de TCC.
+Después, en una nueva línea escribe "SOS" si detectas señales de crisis (suicidio, burnout, peligro, encierro, acoso, bullying o trastornos alimenticios). Si no, escribe "OK".
 
-Al terminar tu respuesta, en la siguiente línea, siempre escribe "---".
-
-Después escribe exactamente lo siguiente, en este orden, sin explicaciones ni símbolos adicionales:
-
-1. "SOS" si detectas señales o palabras literales relacionadas con: crisis emocional, suicidio, burnout, peligro físico, encierro, acoso, bullying o trastornos alimenticios. Si no detectas ninguna, escribe exactamente: "OK".
-2. En la siguiente línea, escribe el tema emocional principal detectado (una sola palabra en minúsculas, sin puntuación al final).
-3. En una o varias líneas siguientes, vas a asignar, siempre, una calificación del 0 al 100, al o los temas que se están tratando basado en el mejor test para ese tema, como puede ser PHQ-9, GAD-7, C-SSRS, ASSIST y AUDIT, IAT, Rosenberg, PSS, PSQI, Escala de soledad de UCLA, SCL-90-R, BAI y BDI-II. Considerando que quizás sea la única interacción con esta persona, ¿puedes decidir si es suficiente información para confirmar la calificación? En caso de que sí lo sea, escribe: tema/nuevaCalificación/OK.  
-Si necesitas más información antes de confirmarla, escribe: tema/nuevaCalificación/NO`,
+En la siguiente línea escribe el tema emocional principal detectado (una palabra en minúsculas, como: ansiedad, estrés, miedo, duelo, etc.). Si no hay uno claro, escribe "ninguno".`,
         },
         ...history,
         { role: 'user', content: mensaje },
       ];
 
-      const response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
         headers: {
-          "Content-Type": "application/json",
+          'Content-Type': 'application/json',
           Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         },
         body: JSON.stringify({
-          model: "gpt-4",
+          model: 'gpt-4o',
+          temperature: 0.7,
           messages,
         }),
       });
 
       const data = await response.json();
-      const respuestaLimpia = data.choices?.[0]?.message?.content || "";
-      const respuesta = respuestaLimpia.trim();
+      const rawResponse = data.choices?.[0]?.message?.content || 'Lo siento, no pude procesar tu mensaje.';
 
-      const [_, bloque, tema, calificacionRaw] = respuesta.match(/---\s*(OK|SOS)\s*(\w+)\s*(.+)/s) || [];
-      const calificacion = calificacionRaw?.split("/")?.[1] || null;
-      const confirmado = calificacionRaw?.split("/")?.[2] || null;
-      const esSOS = bloque === "SOS";
+      const [respuestaLimpia, metaBloque] = rawResponse.split('---');
+      const metaLíneas = (metaBloque || '').trim().split('\n');
+      const indicadorSOS = metaLíneas[0]?.trim().toLowerCase();
+      const tema = metaLíneas[1]?.trim().toLowerCase() || 'ninguno';
+      const esSOS = indicadorSOS === 'sos';
+
+      let respuesta = (respuestaLimpia || '').trim();
+
+      // Añadir preguntas sugeridas si existen
+      if (preguntasExtra) {
+        try {
+          const parsed = JSON.parse(preguntasExtra);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const preguntas = parsed.map(p => `🔹 ${p}`).join('\n');
+            respuesta += `\n\n¿Te gustaría reflexionar también sobre esto?\n${preguntas}`;
+          }
+        } catch (_) {
+          console.warn("⚠️ No se pudieron interpretar las preguntas extra.");
+        }
+      }
 
       const inputTokens = data.usage?.prompt_tokens || 0;
       const outputTokens = data.usage?.completion_tokens || 0;
@@ -96,24 +101,30 @@ Si necesitas más información antes de confirmarla, escribe: tema/nuevaCalifica
         sessionHistories.set(sessionId, history.slice(-MAX_TURNS));
       }
 
-      const fecha = new Date().toISOString().split("T")[0];
+      // Estadística de tokens
+      await fetch("https://script.google.com/macros/s/AKfycbwhooKRTdqs-Mnf3oFylF_rE2kM1AMZ_a4XUOEJQmnGew80rYvP72l_wlfgsAtfL6qVSQ/exec", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId,
+          institucion,
+          inputTokens,
+          outputTokens,
+          totalTokens,
+          costoUSD
+        })
+      });
 
-      if (tema && calificacion && confirmado) {
-        await fetch("https://script.google.com/macros/s/AKfycbx5ZkBinF7aYeo2uskXiPTM8m6lHa6BRi1MslMc76m9FPiKdUkEDkbvEKh9fLVVWAMbWg/exec", {
+      // Contar tema si hay
+      if (tema && tema !== "ninguno") {
+        await fetch("https://www.positronconsulting.com/_functions/contarTema", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            correo: sessionId,
-            institucion,
-            tipoInstitucion,
-            tema,
-            nuevaCalificacion: calificacion,
-            confirmado,
-            fecha
-          })
+          body: JSON.stringify({ institucion, tema })
         });
       }
 
+      // Enviar alerta SOS si aplica
       if (esSOS) {
         await fetch("https://www.positronconsulting.com/_functions/alertaSOS", {
           method: "POST",
@@ -128,27 +139,7 @@ Si necesitas más información antes de confirmarla, escribe: tema/nuevaCalifica
         });
       }
 
-      await fetch("https://script.google.com/macros/s/AKfycbwhooKRTdqs-Mnf3oFylF_rE2kM1AMZ_a4XUOEJQmnGew80rYvP72l_wlfgsAtfL6qVSQ/exec", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId,
-          institucion,
-          inputTokens,
-          outputTokens,
-          totalTokens,
-          costoUSD
-        })
-      });
-
-      return new Response(JSON.stringify({
-        respuesta,
-        tema,
-        sos: esSOS,
-        calificacion,
-        confirmado,
-        fecha
-      }), {
+      return new Response(JSON.stringify({ respuesta, tema, sos: esSOS }), {
         status: 200,
         headers: {
           'Content-Type': 'application/json',
