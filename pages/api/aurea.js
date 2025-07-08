@@ -14,7 +14,7 @@ export default async function handler(req) {
       headers: {
         'Access-Control-Allow-Origin': allowedOrigin,
         'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, x-session-id, x-institucion',
+        'Access-Control-Allow-Headers': 'Content-Type, x-session-id, x-institucion, x-tipo',
       },
     });
   }
