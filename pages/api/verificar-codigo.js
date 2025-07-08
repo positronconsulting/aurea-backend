@@ -1,4 +1,4 @@
-export default async function handler(req, res) {
+ti default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "https://www.positronconsulting.com");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -14,7 +14,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Faltan parámetros" });
     }
 
-    const endpointAppsScript = "https://script.google.com/macros/s/AKfycbwkOAUrBizkLO9htaS_gJ9_hdcB--7z9y3fqPEwY_RcIX_AsXE6zsPFHCX_KnAkaKliUg/exec";
+    const endpointAppsScript = "https://script.google.com/macros/s/AKfycbz3-rNgSZwN_jK1BhYql7mO__xtTexWs9ryFALXHkdmrLvz3jF7V_teK_vZMCV8mhoV-Q/exec";
     console.log("📨 Enviando al Apps Script:", { codigo, email, yaRegistrado });
     const respuesta = await fetch(endpointAppsScript, {
       method: "POST",
