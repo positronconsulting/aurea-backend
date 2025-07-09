@@ -4,13 +4,34 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
+export const config = {
+  runtime: 'edge',
+};
+
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      'Access-Control-Allow-Origin': 'https://www.positronconsulting.com',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, x-session-id, x-institucion, x-tipo',
+    },
+  });
+}
+
 export async function POST(req) {
   try {
     const body = await req.json();
     const { mensaje, historial } = body;
 
     if (!mensaje) {
-      return new Response(JSON.stringify({ error: "Mensaje vacío" }), { status: 400 });
+      return new Response(JSON.stringify({ error: "Mensaje vacío" }), {
+        status: 400,
+        headers: {
+          'Access-Control-Allow-Origin': 'https://www.positronconsulting.com',
+          'Content-Type': 'application/json'
+        }
+      });
     }
 
     const prompt = `
@@ -65,10 +86,15 @@ ${historial || "Sin historial previo."}
     try {
       parsed = JSON.parse(raw);
     } catch (err) {
-      return new Response(JSON.stringify({ error: "Error al interpretar la respuesta de OpenAI", raw }), { status: 500 });
+      return new Response(JSON.stringify({ error: "Error al interpretar la respuesta de OpenAI", raw }), {
+        status: 500,
+        headers: {
+          'Access-Control-Allow-Origin': 'https://www.positronconsulting.com',
+          'Content-Type': 'application/json'
+        }
+      });
     }
 
-    // Normalizar campos
     const {
       respuesta = "",
       tema = "sin_tema",
@@ -87,10 +113,22 @@ ${historial || "Sin historial previo."}
       confirmado,
       fecha: new Date().toISOString().split("T")[0],
       sos
-    }), { status: 200 });
+    }), {
+      status: 200,
+      headers: {
+        'Access-Control-Allow-Origin': 'https://www.positronconsulting.com',
+        'Content-Type': 'application/json'
+      }
+    });
 
   } catch (err) {
     console.error("❌ Error en analizar-respuesta.js:", err.message);
-    return new Response(JSON.stringify({ error: err.message }), { status: 500 });
+    return new Response(JSON.stringify({ error: err.message }), {
+      status: 500,
+      headers: {
+        'Access-Control-Allow-Origin': 'https://www.positronconsulting.com',
+        'Content-Type': 'application/json'
+      }
+    });
   }
 }
