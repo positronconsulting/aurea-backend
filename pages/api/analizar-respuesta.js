@@ -1,30 +1,14 @@
-// ✅ Runtime explícito para evitar CORS
+/// pages/api/analizar-respuesta.js
+import { GoogleGenerativeAI } from "@google/generative-ai";
+
 export const config = {
-  runtime: 'nodejs'
+  runtime: "nodejs",
 };
 
+const genAI = new GoogleGenerativeAI(process.env.GOOGLE_SHEETS_API_KEY);
+
 export default async function handler(req, res) {
-  console.log("📥 Petición recibida en analizar-respuesta");
-
-  // ✅ CORS preflight
-  if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Credentials", "true");
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS,PATCH,DELETE,POST,PUT");
-    res.setHeader("Access-Control-Allow-Headers", "*");
-    return res.status(200).end();
-  }
-
-  // ✅ Solo aceptar POST
-  if (req.method !== "POST") {
-    console.warn("❌ Método no permitido:", req.method);
-    return res.status(405).json({ error: "Método no permitido" });
-  }
-
-  // ✅ Encabezados CORS para la respuesta
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method !== "POST") return res.status(405).end("Método no permitido");
 
   try {
     const {
@@ -38,7 +22,7 @@ export default async function handler(req, res) {
       calificaciones = {}
     } = req.body;
 
-    console.log("📨 Datos recibidos:", {
+    console.log("Data recibida en Analizar del backend:", {
       mensaje,
       historial,
       nombre,
@@ -49,95 +33,52 @@ export default async function handler(req, res) {
       calificaciones
     });
 
-    if (!mensaje || !correo || !institucion) {
-      console.error("❌ Faltan datos obligatorios");
-      return res.status(400).json({ error: "Faltan datos obligatorios" });
-    }
-
-    const calificacionesLista = Object.entries(calificaciones)
-      .map(([tema, valor]) => `${tema}: ${valor}/100`)
-      .join("\n");
-
     const prompt = `
-Eres un terapeuta con enfoque clínico y conocimientos en psicología basada en evidencia. Debes:
+Eres un psicólogo clínico especializado en salud mental digital. Tu tarea es identificar el tema emocional principal del siguiente mensaje del usuario y asignar una calificación emocional del 1 al 100 basada en instrumentos psicológicos como:
+PHQ-9, GAD-7, C-SSRS, ASSIST, AUDIT, IAT, Rosenberg, PSS, PSQI, Escala de Soledad UCLA, SCL-90-R, BAI, BDI-II.
 
-1. Analizar el siguiente mensaje de un usuario considerando el contexto de sus calificaciones psicológicas.
-2. Asignar un tema principal emocional entre los siguientes: ${temas.join(", ")}.
-3. Calificar su estado emocional del 1 al 100, usando tests como: PHQ-9, GAD-7, C-SSRS, ASSIST, AUDIT, IAT, Rosenberg, PSS, PSQI, UCLA, SCL-90-R, BAI, BDI-II.
-4. Dar una justificación breve.
-5. Determinar si hay riesgo de crisis (SOS).
-6. Si la certeza de la asignación es menor a 90%, genera una respuesta cálida, empática y reflexiva basada en TCC y Gestalt, que incluya una pregunta para profundizar en el proceso.
+Debes también evaluar la certeza de tu análisis (1 a 100) y justificar brevemente tu decisión. Considera el contexto del historial de conversación y el perfil emocional previo del usuario.
 
-✉️ Mensaje: "${mensaje}"
-👤 Nombre: ${nombre}
-🏢 Institución: ${institucion}
-📊 Calificaciones actuales:
-${calificacionesLista}
+Lista de temas válidos:
+${temas.join(", ")}
 
-🧠 Historial:
+Historial reciente:
 ${historial.join("\n")}
 
-🔁 Instrucciones de formato: Tu respuesta debe incluir un bloque de texto para el usuario, seguido de tres guiones (---) en una nueva línea, y luego:
-- Tema principal
-- Nueva calificación emocional
-- Porcentaje de certeza
-- Justificación breve
-- SOS (true o false)
-    `.trim();
+Nuevo mensaje:
+${mensaje}
 
-    console.log("🧠 Enviando prompt a OpenAI...");
-    const openaiKey = process.env.OPENAI_API_KEY;
+Perfil previo:
+${JSON.stringify(calificaciones)}
 
-    if (!openaiKey) {
-      throw new Error("❌ No se encontró OPENAI_API_KEY en variables de entorno");
-    }
+Responde en el siguiente formato JSON:
+{
+  "tema": "(uno de los temas válidos, en minúsculas)",
+  "nuevaCalificacion": (número entre 1 y 100),
+  "certeza": (número entre 1 y 100),
+  "justificacion": "(una oración breve y profesional)",
+  "respuesta": "(mensaje cálido con reflexión, max. 1000 caracteres con una pregunta que te lleve a profundizar y mejorar la certeza del análisis.)",
+  "sos": true | false
+}`;
 
-    const completion = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${openaiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        model: "gpt-4o",
-        temperature: 0.5,
-        messages: [{ role: "user", content: prompt }]
-      })
-    });
+    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
 
-    const completionData = await completion.json();
+    console.log("Respuesta de Gemini:", text);
 
-    if (!completion.ok) {
-      console.error("❌ Error en respuesta de OpenAI:", completionData);
-      return res.status(500).json({ error: "Error al obtener respuesta de OpenAI", detalle: completionData });
-    }
+    const jsonStart = text.indexOf("{");
+    const jsonEnd = text.lastIndexOf("}") + 1;
+    const jsonRaw = text.substring(jsonStart, jsonEnd);
+    const parsed = JSON.parse(jsonRaw);
 
-    const texto = completionData.choices?.[0]?.message?.content || "";
-    console.log("✅ Respuesta recibida de OpenAI:");
-    console.log(texto);
+    console.log("Para log Analizar:", parsed);
 
-    const [bloque, metadatos] = texto.split("---").map(x => x.trim());
-
-    const tema = metadatos?.match(/Tema principal\s*[:\-–]\s*(.+)/i)?.[1]?.toLowerCase() || "sin_tema";
-    const nuevaCalificacion = parseInt(metadatos?.match(/Nueva calificación emocional\s*[:\-–]\s*(\d+)/i)?.[1]) || 0;
-    const certeza = parseInt(metadatos?.match(/Porcentaje de certeza\s*[:\-–]\s*(\d+)/i)?.[1]) || 0;
-    const justificacion = metadatos?.match(/Justificación\s*[:\-–]\s*(.+)/i)?.[1] || "";
-    const sos = /sos\s*[:\-–]?\s*(true|sí|si)/i.test(metadatos);
-
-    console.log("📊 Datos extraídos:");
-    console.log({ tema, nuevaCalificacion, certeza, justificacion, sos });
-
-    return res.status(200).json({
-      respuesta: bloque,
-      tema,
-      nuevaCalificacion,
-      certeza,
-      justificacion,
-      sos
-    });
-
+    res.status(200).json(parsed);
   } catch (error) {
-    console.error("🔥 Error general en analizar-respuesta:", error);
-    return res.status(500).json({ error: error.message || "Error interno del servidor" });
+    console.error("❌ Error en analizar-respuesta:", error);
+    res.status(500).json({ error: "Fallo en el análisis emocional" });
   }
 }
+
