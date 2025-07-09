@@ -3,149 +3,161 @@ export const config = {
 };
 
 import { GoogleSpreadsheet } from 'google-spreadsheet';
+import { JWT } from 'google-auth-library';
+import OpenAI from 'openai';
 import nodemailer from 'nodemailer';
-import { OpenAI } from 'openai';
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-session-id,x-institucion,x-tipo,x-consentimiento,x-correo-sos");
 
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
-  }
-
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Método no permitido" });
-  }
+  if (req.method === "OPTIONS") return res.status(204).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Método no permitido" });
 
   try {
-    const { mensaje, nombre = "", temaAnterior = "", calificacionAnterior = "" } = req.body;
+    const body = req.body || await req.json();
+    const {
+      mensaje,
+      historial = [],
+      nombre = "",
+      correo = "anonimo@correo.com",
+      institucion = "Sin institución",
+      tipoInstitucion = "Social",
+      temas = [],
+      calificaciones = {}
+    } = body;
 
-    const correo = req.headers["x-session-id"] || "anonimo@correo.com";
-    const institucion = req.headers["x-institucion"] || "Sin institución";
-    const tipoInstitucion = req.headers["x-tipo"] || "Social";
-    const consentimiento = req.headers["x-consentimiento"] === "true";
-    const correoSOS = req.headers["x-correo-sos"] || "";
+    const prompt = `
+Eres un analista psicológico que evalúa mensajes para un sistema de acompañamiento emocional. Usa criterios del DSM-5-TR, CIE-11, guías de la APA, NIH/NIMH, TCC y la guía WHO mhGAP. Responde con enfoque de la Terapia Cognitivo-Conductual y Psicología Humanista.
 
-    const historial = [
-      {
-        role: "system",
-        content: `Eres AUREA, un sistema de acompañamiento emocional cálido, humano y sin juicios. Acompañas usando herramientas de la Terapia Cognitivo Conductual, el enfoque neurocognitivo conductual, la Psicología Humanista y la psicoterapia Gestalt.
+Tareas:
+1. Identifica cuál de los siguientes temas está siendo tratado: ${temas.join(', ')}.
+2. Asigna una calificación del 1 al 10 al tema detectado.
+3. Da un porcentaje de certeza de tu respuesta (0-100).
+4. Si detectas palabras literales o contexto de crisis emocional, suicidio, burnout, peligro, peligro físico, encierro, acoso, bullying, bulimia, anorexia o trastornos alimenticios, responde con true en SOS de la respuesta JSON.
+5. Da acompañamiento e incluye UNA pregunta conversacional con enfoque humanista para profundizar el análisis y aumentar la certeza.
+6. Especifica qué tipo de instrumento psicológico (ej. PHQ-9, GAD-7, etc.) utilizaste para justificar tu respuesta.
 
-Tu estilo es cercano, claro y compasivo, aunque no eres psicólogo ni das diagnósticos ni consejos médicos. Tu objetivo es ayudar a las personas a explorar lo que sienten, identificar emociones, reflexionar sobre su bienestar y avanzar en su proceso personal.
+Formato de respuesta JSON:
 
-Solo puedes hablar sobre salud emocional. Si el usuario pide algo fuera de eso (por ejemplo, temas técnicos, diagnósticos médicos o preguntas personales), respóndele con respeto que no puedes ayudar en ese tema.
+{
+  "tema": "Ansiedad",
+  "nuevaCalificacion": 6,
+  "certeza": 82,
+  "sos": false,
+  "pregunta": "¿Sientes que esta preocupación ha interferido con tu día a día?",
+  "justificacion": "Basado en criterios del GAD-7 y observaciones del discurso"
+}
 
-Además de acompañar con tus respuestas, analiza el mensaje del usuario usando criterios del DSM-5-TR, ICD-11, APA, NIH/NIMH, protocolos de Terapia Cognitivo Conductual y la guía WHO mhGAP.
+Historial reciente:
+${historial.join('\n')}
 
-Haz una introspección guiada y natural. Si detectas señales textuales o en contexto de crisis emocional, suicidio, burnout, peligro físico, encierro, acoso, bullying, bulimia, anorexia o trastornos alimenticios, escribe exactamente: "SOS".
+Mensaje actual:
+${mensaje}
+`;
 
-Devuelve también el tema detectado, el nivel de calificación emocional, el nivel de certeza, y si es posible, una justificación. Si el mensaje no es emocional, responde con respeto que solo puedes ayudar en temas de salud emocional.`
-      },
-      { role: "user", content: mensaje }
-    ];
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: historial,
-      temperature: 0.7,
+      model: 'gpt-4o',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.4
     });
 
-    const raw = completion.choices[0]?.message?.content || "No tengo respuesta.";
+    const respuesta = completion.choices[0]?.message?.content?.trim();
+    let datos;
 
-    // Limpieza de metadatos visibles en respuesta
-    const respuesta = raw
-      .replace(/Calificación:.*$/i, "")
-      .replace(/Certeza:.*$/i, "")
-      .replace(/Tema:.*$/i, "")
-      .replace(/Justificación:.*$/i, "")
-      .trim();
-
-    // Extracción de metadatos reales
-    let tema = "", nuevaCalificacion = "", certeza = "", justificacion = "";
-    const calificacionRegex = /Calificación:\s*(\d+)/i;
-    const certezaRegex = /Certeza:\s*(\d+%?)/i;
-    const temaRegex = /Tema:\s*([^\n]+)/i;
-    const justificacionRegex = /Justificación:\s*([\s\S]+?)(?:\n|$)/i;
-
-    const cal = raw.match(calificacionRegex);
-    const cer = raw.match(certezaRegex);
-    const tem = raw.match(temaRegex);
-    const jus = raw.match(justificacionRegex);
-
-    if (cal) nuevaCalificacion = cal[1];
-    if (cer) certeza = cer[1];
-    if (tem) tema = tem[1].trim();
-    if (jus) justificacion = jus[1].trim();
-
-    if (raw.includes("SOS")) {
-      await enviarCorreoSOS(correo, institucion, mensaje, respuesta, consentimiento, correoSOS);
+    try {
+      datos = JSON.parse(respuesta);
+    } catch (err) {
+      return res.status(500).json({ error: "Error al parsear respuesta de OpenAI", raw: respuesta });
     }
 
-    await registrarCalificacion({
-      correo,
-      nombre,
-      institucion,
-      tipoInstitucion,
+    const {
       tema,
-      calificacionAnterior,
       nuevaCalificacion,
       certeza,
-      justificación: justificacion,
-      pregunta1: "",
-      pregunta2: ""
+      sos,
+      pregunta,
+      justificacion
+    } = datos;
+
+    // Log en Google Sheets
+    const auth = new JWT({
+      email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      scopes: ['https://www.googleapis.com/auth/spreadsheets']
     });
+
+    const doc = new GoogleSpreadsheet(process.env.SHEET_ID, auth);
+    await doc.loadInfo();
+
+    const hojaLog = doc.sheetsByTitle['logCalificaciones'];
+    await hojaLog.addRow({
+      Fecha: new Date().toISOString(),
+      Correo: correo,
+      Nombre: nombre,
+      Institucion: institucion,
+      Tipo: tipoInstitucion,
+      Tema: tema,
+      CalificacionAnterior: calificaciones?.[tema] ?? '',
+      NuevaCalificacion: nuevaCalificacion,
+      Certeza: certeza,
+      Justificacion: justificacion
+    });
+
+    if (sos === true || (typeof sos === 'string' && sos.toUpperCase() === 'SOS')) {
+      const hojaSOS = doc.sheetsByTitle['HistorialSOS'];
+      await hojaSOS.addRow({
+        Timestamp: new Date().toISOString(),
+        Institucion: institucion,
+        Correo: correo,
+        Mensaje: mensaje,
+        Respuesta: respuesta,
+        Historial: historial.join('\n'),
+        Tema: tema,
+        Autorizado: "" // Se llenará en sistemaAurea
+      });
+
+      // Enviar correo a Alfredo
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          user: process.env.ALERTA_EMAIL,
+          pass: process.env.ALERTA_EMAIL_PASS
+        }
+      });
+
+      await transporter.sendMail({
+        from: `"Alerta SOS AUREA" <${process.env.ALERTA_EMAIL}>`,
+        to: "alfredo@positronconsulting.com",
+        subject: `🚨 SOS detectado: ${tema}`,
+        html: `
+          <p><strong>Usuario:</strong> ${nombre} (${correo})</p>
+          <p><strong>Institución:</strong> ${institucion}</p>
+          <p><strong>Tema detectado:</strong> ${tema}</p>
+          <p><strong>Mensaje del usuario:</strong></p>
+          <p>${mensaje}</p>
+          <p><strong>Respuesta de AUREA:</strong></p>
+          <p>${respuesta}</p>
+        `
+      });
+    }
 
     return res.status(200).json({
-      respuesta,
       tema,
       nuevaCalificacion,
       certeza,
-      justificacion
+      pregunta,
+      respuesta,
+      sos: sos === true || sos === "SOS"
     });
 
   } catch (error) {
-    console.error('❌ Error en analizar-respuesta:', error.message);
-    return res.status(500).json({ error: error.message });
+    console.error("🔥 Error en analizar-respuesta:", error);
+    return res.status(500).json({ error: "Error interno del servidor", detalle: error.message });
   }
 }
 
-async function registrarCalificacion(data) {
-  try {
-    await fetch(process.env.URL_LOG_CALIFICACIONES, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-  } catch (error) {
-    console.error('🧨 Error al registrar en logCalificaciones:', error.message);
-  }
-}
-
-async function enviarCorreoSOS(correoUsuario, institucion, mensaje, respuesta, consentimiento, correoSOS) {
-  try {
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.EMAIL_POSITRON,
-        pass: process.env.PASS_POSITRON,
-      },
-    });
-
-    const destinatarios = [process.env.EMAIL_POSITRON];
-    if (consentimiento && correoSOS) destinatarios.push(correoSOS);
-
-    await transporter.sendMail({
-      from: `"AUREA" <${process.env.EMAIL_POSITRON}>`,
-      to: destinatarios,
-      subject: `⚠️ Alerta SOS - ${institucion}`,
-      text: `Mensaje del usuario: ${mensaje}\n\nRespuesta de AUREA: ${respuesta}`,
-    });
-  } catch (error) {
-    console.error('❌ Error al enviar correo SOS:', error.message);
-  }
-}
 
