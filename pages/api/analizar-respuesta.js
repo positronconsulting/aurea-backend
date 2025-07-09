@@ -1,144 +1,143 @@
+// ✅ Runtime explícito para evitar CORS
 export const config = {
-  runtime: 'nodejs',
+  runtime: 'nodejs'
 };
 
-import { OpenAI } from 'openai';
+export default async function handler(req, res) {
+  console.log("📥 Petición recibida en analizar-respuesta");
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-export default async function handler(req) {
-  const allowedOrigin = 'https://www.positronconsulting.com';
-
-  // Manejo de CORS
-  if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        'Access-Control-Allow-Origin': allowedOrigin,
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, x-session-id, x-institucion, x-tipo',
-      },
-    });
+  // ✅ CORS preflight
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS,PATCH,DELETE,POST,PUT");
+    res.setHeader("Access-Control-Allow-Headers", "*");
+    return res.status(200).end();
   }
 
-  if (req.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Método no permitido' }), {
-      status: 405,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': allowedOrigin,
-      },
-    });
+  // ✅ Solo aceptar POST
+  if (req.method !== "POST") {
+    console.warn("❌ Método no permitido:", req.method);
+    return res.status(405).json({ error: "Método no permitido" });
   }
+
+  // ✅ Encabezados CORS para la respuesta
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   try {
-    const body = await req.json();
     const {
       mensaje,
       historial = [],
       nombre = "",
       correo = "",
       institucion = "",
-      tipoInstitucion = "Empresa",
+      tipoInstitucion = "",
       temas = [],
       calificaciones = {}
-    } = body;
+    } = req.body;
 
-    console.log("📩 Mensaje recibido para analizar:", mensaje);
-    console.log("🧠 Contexto:", { nombre, correo, institucion, tipoInstitucion });
-
-    const prompt = `Eres un analista psicológico que evalúa mensajes de usuarios para un sistema de acompañamiento emocional. Analizas mensajes en contexto clínico, considerando antecedentes recientes, nombre del usuario y temas previamente abordados.
-
-Tu análisis combina criterios del DSM-5-TR, CIE-11, guías de la APA y el NIH/NIMH, además de protocolos de Terapia Cognitivo-Conductual, Psicoterapia Humanista y la guía WHO mhGAP.
-
-Usa escalas clínicas reconocidas como PHQ-9, GAD-7, C-SSRS, ASSIST, AUDIT, IAT, Rosenberg, PSS, PSQI, Escala de Soledad UCLA, SCL-90-R, BAI y BDI-II para fundamentar la calificación emocional del 1 al 100. Tu justificación debe incluir el nombre del test en que se basa.
-
-Instrucciones:
-
-1. Identifica el tema emocional principal del mensaje. Debe ser uno de los siguientes: ${temas.join(", ")}.
-2. Asigna una calificación emocional del 1 al 100 al tema detectado.
-3. Estima tu nivel de certeza en porcentaje (de 0 a 100).
-4. Justifica brevemente tu respuesta con base en indicadores clínicos o patrones del lenguaje observados.
-5. Si la certeza es menor al 90%, incluye una pregunta emocional conversacional (cálida, abierta, humanista) para profundizar. Esta pregunta se usará para obtener más información en un segundo mensaje.
-6. Si detectas palabras literales o contexto de crisis emocional, suicidio, peligro, acoso, bullying, bulimia, anorexia o autolesiones, marca "sos" como true.
-7. Si el nivel de certeza es menor a 90%, no clasifiques como SOS por falta de evidencia clínica. Solo lanza SOS si hay señales claras.
-
-Debes responder en formato JSON exacto, sin texto adicional. Ejemplo:
-
-{
-  "tema": "ansiedad",
-  "nuevaCalificacion": 78,
-  "certeza": 86,
-  "sos": false,
-  "pregunta": "¿Sientes que estas preocupaciones te están quitando energía últimamente?",
-  "justificacion": "El discurso refleja tensión, anticipación negativa y patrones cognitivos del GAD-7"
-}
-
-Nombre: ${nombre}
-Historial reciente:
-${historial.join('\n')}
-
-Mensaje actual del usuario:
-${mensaje}
-    `.trim();
-
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o",
-      temperature: 0.5,
-      messages: [{ role: "user", content: prompt }],
+    console.log("📨 Datos recibidos:", {
+      mensaje,
+      historial,
+      nombre,
+      correo,
+      institucion,
+      tipoInstitucion,
+      temas,
+      calificaciones
     });
 
-    const rawResponse = completion.choices?.[0]?.message?.content?.trim();
-    console.log("🧠 Respuesta bruta de OpenAI:", rawResponse);
-
-    let parsed;
-    try {
-      parsed = JSON.parse(rawResponse);
-    } catch (err) {
-      console.error("❌ Error al parsear JSON:", err.message);
-      return new Response(JSON.stringify({ error: "Error al interpretar respuesta de OpenAI", raw: rawResponse }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': allowedOrigin },
-      });
+    if (!mensaje || !correo || !institucion) {
+      console.error("❌ Faltan datos obligatorios");
+      return res.status(400).json({ error: "Faltan datos obligatorios" });
     }
 
-    const {
-      tema = "sin_tema",
-      nuevaCalificacion = null,
-      certeza = 0,
-      sos = false,
-      pregunta = "",
-      justificacion = ""
-    } = parsed;
+    const calificacionesLista = Object.entries(calificaciones)
+      .map(([tema, valor]) => `${tema}: ${valor}/100`)
+      .join("\n");
 
-    console.log("✅ Resultado analizado:", { tema, nuevaCalificacion, certeza, sos, pregunta });
+    const prompt = `
+Eres un terapeuta con enfoque clínico y conocimientos en psicología basada en evidencia. Debes:
 
-    return new Response(JSON.stringify({
+1. Analizar el siguiente mensaje de un usuario considerando el contexto de sus calificaciones psicológicas.
+2. Asignar un tema principal emocional entre los siguientes: ${temas.join(", ")}.
+3. Calificar su estado emocional del 1 al 100, usando tests como: PHQ-9, GAD-7, C-SSRS, ASSIST, AUDIT, IAT, Rosenberg, PSS, PSQI, UCLA, SCL-90-R, BAI, BDI-II.
+4. Dar una justificación breve.
+5. Determinar si hay riesgo de crisis (SOS).
+6. Si la certeza de la asignación es menor a 90%, genera una respuesta cálida, empática y reflexiva basada en TCC y Gestalt, que incluya una pregunta para profundizar en el proceso.
+
+✉️ Mensaje: "${mensaje}"
+👤 Nombre: ${nombre}
+🏢 Institución: ${institucion}
+📊 Calificaciones actuales:
+${calificacionesLista}
+
+🧠 Historial:
+${historial.join("\n")}
+
+🔁 Instrucciones de formato: Tu respuesta debe incluir un bloque de texto para el usuario, seguido de tres guiones (---) en una nueva línea, y luego:
+- Tema principal
+- Nueva calificación emocional
+- Porcentaje de certeza
+- Justificación breve
+- SOS (true o false)
+    `.trim();
+
+    console.log("🧠 Enviando prompt a OpenAI...");
+    const openaiKey = process.env.OPENAI_API_KEY;
+
+    if (!openaiKey) {
+      throw new Error("❌ No se encontró OPENAI_API_KEY en variables de entorno");
+    }
+
+    const completion = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${openaiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        temperature: 0.5,
+        messages: [{ role: "user", content: prompt }]
+      })
+    });
+
+    const completionData = await completion.json();
+
+    if (!completion.ok) {
+      console.error("❌ Error en respuesta de OpenAI:", completionData);
+      return res.status(500).json({ error: "Error al obtener respuesta de OpenAI", detalle: completionData });
+    }
+
+    const texto = completionData.choices?.[0]?.message?.content || "";
+    console.log("✅ Respuesta recibida de OpenAI:");
+    console.log(texto);
+
+    const [bloque, metadatos] = texto.split("---").map(x => x.trim());
+
+    const tema = metadatos?.match(/Tema principal\s*[:\-–]\s*(.+)/i)?.[1]?.toLowerCase() || "sin_tema";
+    const nuevaCalificacion = parseInt(metadatos?.match(/Nueva calificación emocional\s*[:\-–]\s*(\d+)/i)?.[1]) || 0;
+    const certeza = parseInt(metadatos?.match(/Porcentaje de certeza\s*[:\-–]\s*(\d+)/i)?.[1]) || 0;
+    const justificacion = metadatos?.match(/Justificación\s*[:\-–]\s*(.+)/i)?.[1] || "";
+    const sos = /sos\s*[:\-–]?\s*(true|sí|si)/i.test(metadatos);
+
+    console.log("📊 Datos extraídos:");
+    console.log({ tema, nuevaCalificacion, certeza, justificacion, sos });
+
+    return res.status(200).json({
+      respuesta: bloque,
       tema,
       nuevaCalificacion,
       certeza,
-      sos,
-      pregunta,
       justificacion,
-      respuesta: rawResponse
-    }), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': allowedOrigin,
-      },
+      sos
     });
 
   } catch (error) {
-    console.error("🔥 Error general en analizar-respuesta.js:", error.message);
-    return new Response(JSON.stringify({ error: "Error interno del servidor" }), {
-      status: 500,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': allowedOrigin,
-      },
-    });
+    console.error("🔥 Error general en analizar-respuesta:", error);
+    return res.status(500).json({ error: error.message || "Error interno del servidor" });
   }
 }
