@@ -1,18 +1,13 @@
-/// pages/api/analizar-respuesta.js
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { NextResponse } from "next/server";
 
 export const config = {
-  runtime: "nodejs",
+  runtime: "nodejs"
 };
 
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_SHEETS_API_KEY);
-
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).end("Método no permitido");
-
   try {
     const {
-      mensaje,
+      mensaje = "",
       historial = [],
       nombre = "",
       correo = "",
@@ -34,51 +29,83 @@ export default async function handler(req, res) {
     });
 
     const prompt = `
-Eres un psicólogo clínico especializado en salud mental digital. Tu tarea es identificar el tema emocional principal del siguiente mensaje del usuario y asignar una calificación emocional del 1 al 100 basada en instrumentos psicológicos como:
-PHQ-9, GAD-7, C-SSRS, ASSIST, AUDIT, IAT, Rosenberg, PSS, PSQI, Escala de Soledad UCLA, SCL-90-R, BAI, BDI-II.
+Eres un terapeuta virtual llamado AUREA. Tu tarea es analizar el estado emocional de la persona con base en su mensaje y los últimos 3 intercambios previos.
 
-Debes también evaluar la certeza de tu análisis (1 a 100) y justificar brevemente tu decisión. Considera el contexto del historial de conversación y el perfil emocional previo del usuario.
+Contesta de forma cálida, sin emitir diagnósticos, sin exclamaciones ni promesas. Solo acompaña con preguntas profundas y técnicas de la Terapia Cognitivo Conductual (TCC) y la psicoterapia Gestalt.
 
-Lista de temas válidos:
+Con base en las siguientes escalas psicológicas estandarizadas (PHQ-9, GAD-7, C-SSRS, ASSIST, AUDIT, IAT, Rosenberg, PSS, PSQI, UCLA Soledad, SCL-90-R, BAI y BDI-II):
+
+1. Determina cuál de los siguientes temas es el más relevante en el mensaje de la persona:
 ${temas.join(", ")}
 
-Historial reciente:
+2. Asigna una calificación emocional del 1 al 100 al tema elegido (100 es el nivel más alto de gravedad emocional), con base en los instrumentos mencionados.
+
+3. Estima el porcentaje de certeza (del 1 al 100) de que esa calificación corresponde correctamente al tema detectado.
+
+4. Justifica tu decisión clínica en máximo 3 líneas.
+
+5. Si el nivel de certeza es menor a 90, haz una nueva pregunta para obtener más información emocional sobre ese tema.
+
+6. Limita tu respuesta a menos de 1000 caracteres. No uses emojis ni signos de exclamación.
+
+Datos disponibles:
+- Nombre: ${nombre}
+- Historial reciente:
 ${historial.join("\n")}
+- Último mensaje del usuario: ${mensaje}
+- Calificaciones previas: ${JSON.stringify(calificaciones, null, 2)}
+    
+Después de tu respuesta escribe tres guiones (`---`) en una nueva línea y luego en otra línea:
+- SOS → si notas señales claras de crisis emocional.
+- OK → si no hay señales de riesgo.
+`;
 
-Nuevo mensaje:
-${mensaje}
+    console.log("Para log Analizar:", prompt);
 
-Perfil previo:
-${JSON.stringify(calificaciones)}
+    const openaiKey = process.env.OPENAI_API_KEY;
 
-Responde en el siguiente formato JSON:
-{
-  "tema": "(uno de los temas válidos, en minúsculas)",
-  "nuevaCalificacion": (número entre 1 y 100),
-  "certeza": (número entre 1 y 100),
-  "justificacion": "(una oración breve y profesional)",
-  "respuesta": "(mensaje cálido con reflexión, max. 1000 caracteres con una pregunta que te lleve a profundizar y mejorar la certeza del análisis.)",
-  "sos": true | false
-}`;
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${openaiKey}`
+      },
+      body: JSON.stringify({
+        model: "gpt-4",
+        messages: [
+          { role: "system", content: "Eres un terapeuta emocional virtual experto." },
+          { role: "user", content: prompt }
+        ],
+        temperature: 0.6
+      })
+    });
 
-    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text();
+    const result = await response.json();
+    const text = result.choices?.[0]?.message?.content || "No se pudo generar respuesta.";
 
-    console.log("Respuesta de Gemini:", text);
+    const [respuesta, metadataRaw] = text.split("---");
+    const metadata = metadataRaw?.trim();
+    const sos = metadata === "SOS";
 
-    const jsonStart = text.indexOf("{");
-    const jsonEnd = text.lastIndexOf("}") + 1;
-    const jsonRaw = text.substring(jsonStart, jsonEnd);
-    const parsed = JSON.parse(jsonRaw);
+    const temaDetectado = temas.find((tema) => respuesta.toLowerCase().includes(tema.toLowerCase())) || "sin_tema";
+    const matchCalificacion = respuesta.match(/(\d{1,3})\s*\/(?:\s*)?100/);
+    const nuevaCalificacion = matchCalificacion ? parseInt(matchCalificacion[1]) : null;
+    const matchCerteza = respuesta.match(/(\d{1,3})\s*%/);
+    const certeza = matchCerteza ? parseInt(matchCerteza[1]) : 0;
 
-    console.log("Para log Analizar:", parsed);
+    const justificacionMatch = respuesta.match(/justifica(?:ción)?[^:]*[:\-\n]*([^"]{10,300})/i);
+    const justificacion = justificacionMatch ? justificacionMatch[1].trim() : "";
 
-    res.status(200).json(parsed);
+    return res.status(200).json({
+      respuesta: respuesta.trim(),
+      tema: temaDetectado,
+      nuevaCalificacion,
+      certeza,
+      justificacion,
+      sos
+    });
   } catch (error) {
     console.error("❌ Error en analizar-respuesta:", error);
-    res.status(500).json({ error: "Fallo en el análisis emocional" });
+    return res.status(500).json({ error: "Fallo en analizar-respuesta", detalles: error.message });
   }
 }
-
