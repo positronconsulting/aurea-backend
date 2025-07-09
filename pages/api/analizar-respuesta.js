@@ -1,103 +1,96 @@
-import OpenAI from "openai";
+import { OpenAI } from "openai";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
 
-export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Método no permitido" });
-  }
-
-  const {
-    mensajeUsuario,
-    historial = [],
-    nombre = "",
-    correo = "",
-    institucion = "",
-    tipoInstitucion = "",
-    temas = [],
-    calificaciones = {}
-  } = req.body;
-
+export async function POST(req) {
   try {
-    const mensajes = [
-      {
-        role: "system",
-        content: `Eres un experto en salud mental que evalúa mensajes de personas con base en el DSM-5-TR, ICD-11, protocolos de Terapia Cognitivo Conductual (TCC), psicoterapia humanista y la guía WHO mhGAP.
-        
-Tu objetivo es analizar el mensaje recibido por parte del usuario y detectar sobre cuál de los siguientes temas está escribiendo:
+    const body = await req.json();
+    const { mensaje, historial } = body;
 
-${temas.join(", ")}
+    if (!mensaje) {
+      return new Response(JSON.stringify({ error: "Mensaje vacío" }), { status: 400 });
+    }
 
-Cada tema es exclusivo de su tipo de institución. Debes elegir solo uno.
+    const prompt = `
+Eres AUREA, un sistema de acompañamiento emocional cálido, humano y sin juicios. Acompañas usando herramientas de la Terapia Cognitivo Conductual (TCC), psicología humanista y psicoterapia Gestalt.
 
-Luego, asigna una calificación del 1 al 10 sobre el bienestar emocional del usuario en ese tema, siendo 1 muy grave y 10 completamente saludable.
+No eres psicólogo ni das diagnósticos ni consejos médicos. Tu tarea es:
+1. Detectar si el mensaje trata sobre salud mental y si es así, identificar el tema emocional principal.
+2. Evaluar el nivel emocional en una escala de 0 a 10 (donde 0 es neutral y 10 es máximo impacto).
+3. Calificar el estado actual del usuario sobre ese tema con una calificación de 0 a 100.
+4. Evaluar si hay señales de crisis o peligro (bullying, suicidio, encierro, acoso, burnout, trastornos alimenticios, peligro físico, etc.). Si es así, debes escribir "SOS".
+5. Si no tienes suficiente información para confirmar con certeza el tema o la calificación, haz una pregunta emocional introspectiva, de forma cálida y humana, basada en TCC y Gestalt.
+6. Si tienes certeza alta, responde con acompañamiento emocional breve y profundo sobre el tema.
+7. Si el mensaje no habla de salud mental, responde amablemente que solo puedes acompañar en temas emocionales o psicológicos.
 
-IMPORTANTE: Siempre que detectes en texto literal o en contexto señales de crisis emocional, suicidio, burnout, peligro físico o psicológico, encierro, acoso, bullying, bulimia, anorexia o trastornos alimenticios, responde exactamente: "SOS" en el campo correspondiente.
-
-Elige cuál sería la mejor pregunta conversacional para hacerle al usuario que ayude a confirmar o refinar tu calificación. Esa pregunta debe sonar como si fuera de un terapeuta humano y estar enmarcada en el enfoque TCC y humanista.
-
-Devuelve tu análisis como un JSON con esta estructura estricta:
+Usa esta estructura JSON, sin explicaciones adicionales:
 
 {
-  "tema": "...",
-  "nuevaCalificacion": ...,
-  "certeza": ...,
-  "preguntaSiguiente": "...",
-  "justificacion": "...",
-  "alerta": "SOS" | "OK"
-}`
-      },
-      {
-        role: "user",
-        content: `
-Nombre: ${nombre}
-Correo: ${correo}
-Institución: ${institucion}
-Tipo de institución: ${tipoInstitucion}
-Calificaciones actuales: ${JSON.stringify(calificaciones)}
-Historial reciente: ${historial.join("\n")}
-Nuevo mensaje del usuario: ${mensajeUsuario}`
-      }
-    ];
+  "respuesta": "Tu respuesta escrita aquí",
+  "tema": "una sola palabra que describa el tema (ej. ansiedad, autoestima, duelo, etc.)",
+  "nuevaCalificacion": 85,
+  "certeza": 91,
+  "sos": true/false
+}
+
+Mensaje recibido:
+"${mensaje}"
+
+Historial previo de conversación:
+"""
+${historial || "Sin historial previo."}
+"""
+`;
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o",
-      messages: mensajes,
-      temperature: 0.4
+      temperature: 0.7,
+      messages: [
+        {
+          role: "system",
+          content: "Responde solo con el JSON indicado. No incluyas ningún texto fuera del objeto JSON."
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ]
     });
 
-    const respuesta = completion.choices[0].message.content;
+    const raw = completion.choices?.[0]?.message?.content?.trim();
+    let parsed;
 
-    let datos = {};
     try {
-      datos = JSON.parse(respuesta);
+      parsed = JSON.parse(raw);
     } catch (err) {
-      return res.status(500).json({ error: "No se pudo interpretar la respuesta del modelo", detalle: respuesta });
+      return new Response(JSON.stringify({ error: "Error al interpretar la respuesta de OpenAI", raw }), { status: 500 });
     }
 
+    // Normalizar campos
     const {
+      respuesta = "",
       tema = "sin_tema",
       nuevaCalificacion = null,
       certeza = 0,
-      justificacion = "sin_justificacion",
-      preguntaSiguiente = null,
-      alerta = "OK"
-    } = datos;
+      sos = false
+    } = parsed;
 
-    const sos = alerta === "SOS";
+    const confirmado = certeza >= 90 ? "OK" : "NO";
 
-    res.status(200).json({
+    return new Response(JSON.stringify({
+      respuesta,
       tema,
       nuevaCalificacion,
       certeza,
-      justificacion,
-      preguntaSiguiente,
-      sos,
-      raw: respuesta
-    });
+      confirmado,
+      fecha: new Date().toISOString().split("T")[0],
+      sos
+    }), { status: 200 });
 
-  } catch (error) {
-    console.error("❌ Error en analizar-respuesta:", error);
-    res.status(500).json({ error: "Error en el servidor" });
+  } catch (err) {
+    console.error("❌ Error en analizar-respuesta.js:", err.message);
+    return new Response(JSON.stringify({ error: err.message }), { status: 500 });
   }
 }
