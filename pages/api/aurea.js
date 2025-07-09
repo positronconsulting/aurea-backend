@@ -30,11 +30,41 @@ export default async function handler(req) {
         sessionHistories.set(sessionId, []);
       }
       const history = sessionHistories.get(sessionId);
+      const historialTexto = history.map(t => `${t.role}: ${t.content}`).join('\n');
 
-      const messages = [
-        {
-          role: 'system',
-          content: `Eres AUREA, un sistema de acompañamiento emocional cálido y sin juicios. Acompañas usando herramientas de la terapia cognitivo conductual, el enfoque neurocognitivo conductual y la psicoterapia Gestalt. Haces preguntas que invitan al autoanálisis. Tu estilo es cercano, claro y humano a pesar de ser sólo un acompañante, no un psicólogo certificado.
+      // 🔍 Paso 1: Analizar mensaje
+      const analisis = await fetch("https://aurea-backend-two.vercel.app/api/analizar-respuesta", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mensajeUsuario: mensaje,
+          correo: sessionId,
+          nombre: "",
+          institucion,
+          tipoInstitucion,
+          historial: historialTexto,
+          temas: [], // ← se debe completar dinámicamente desde frontend
+          calificaciones: {} // ← idem
+        })
+      });
+
+      const {
+        respuesta: preguntaConversacional,
+        tema,
+        nuevaCalificacion,
+        certeza,
+        justificación,
+        sos
+      } = await analisis.json();
+
+      let respuestaFinal = preguntaConversacional;
+
+      // ✅ Si certeza ≥ 90%, generar respuesta de AUREA
+      if (certeza >= 90 && tema && tema !== "no_emocional") {
+        const messages = [
+          {
+            role: 'system',
+            content: `Eres AUREA, un sistema de acompañamiento emocional cálido y sin juicios. Acompañas usando herramientas de la terapia cognitivo conductual, el enfoque neurocognitivo conductual y la psicoterapia Gestalt. Haces preguntas que invitan al autoanálisis. Tu estilo es cercano, claro y humano a pesar de ser sólo un acompañante, no un psicólogo certificado.
 
 Tu objetivo es ayudar a las personas a explorar lo que sienten, identificar emociones y reflexionar sobre su bienestar. No das diagnósticos ni consejos médicos.
 
@@ -46,95 +76,62 @@ Al final de tu respuesta, escribe tres guiones (---), siempre.
 
 Después de los guiones, IMPORTANTÍSIMO: Siempre que detectes que se muestran señales o que se usan palabras literales de crisis emocional, suicidio, burnout, peligro, peligro físico, encierro, acoso, bullying, bulimia, anoerxia o trastornos alimenticios, escribe exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK". 
 En la siguiente línea, escribe el tema emocional principal detectado en una sola palabra en minúsculas (por ejemplo: suicidio, tristeza, ansiedad, culpa, miedo, duelo, enojo, estrés). Nunca pongas puntuación al final de la palabra.`
-        },
-        ...history,
-        { role: 'user', content: mensaje },
-      ];
+          },
+          ...history,
+          { role: 'user', content: mensaje }
+        ];
 
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o',
-          temperature: 0.8,
-          messages,
-        }),
-      });
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: "gpt-4o",
+            temperature: 0.8,
+            messages,
+          }),
+        });
 
-      const data = await response.json();
-      const rawResponse = data.choices?.[0]?.message?.content || 'Lo siento, no pude procesar tu mensaje.';
+        const data = await response.json();
+        const raw = data.choices?.[0]?.message?.content || "";
+        const [cuerpo, meta] = raw.split("---");
+        const metaLíneas = (meta || "").trim().split("\n");
+        const indicadorSOS = metaLíneas[0]?.trim().toLowerCase();
+        const temaFinal = metaLíneas[1]?.trim().toLowerCase() || tema;
 
-      const [respuestaLimpia, metaBloque] = rawResponse.split('---');
-      const metaLíneas = (metaBloque || '').trim().split('\n');
-      const indicadorSOS = metaLíneas[0]?.trim().toLowerCase();
-      const tema = metaLíneas[1]?.trim().toLowerCase() || 'ninguno';
-      const esSOS = indicadorSOS === 'sos';
-
-      const respuesta = (respuestaLimpia || '').trim();
-
-      const inputTokens = data.usage?.prompt_tokens || 0;
-      const outputTokens = data.usage?.completion_tokens || 0;
-      const totalTokens = inputTokens + outputTokens;
-      const costoUSD = ((inputTokens * 0.005) + (outputTokens * 0.015)) / 1000;
-
-      history.push({ role: 'user', content: mensaje });
-      history.push({ role: 'assistant', content: respuesta });
-      if (history.length > MAX_TURNS) {
-        sessionHistories.set(sessionId, history.slice(-MAX_TURNS));
+        respuestaFinal = cuerpo.trim();
+        history.push({ role: "user", content: mensaje });
+        history.push({ role: "assistant", content: respuestaFinal });
+        if (history.length > MAX_TURNS) {
+          sessionHistories.set(sessionId, history.slice(-MAX_TURNS));
+        }
       }
 
-      // 👉 Registrar en Sheets
-      await fetch("https://script.google.com/macros/s/AKfycbwhooKRTdqs-Mnf3oFylF_rE2kM1AMZ_a4XUOEJQmnGew80rYvP72l_wlfgsAtfL6qVSQ/exec", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sessionId,
-          institucion,
-          inputTokens,
-          outputTokens,
-          totalTokens,
-          costoUSD
-        })
-      });
-
-      // 👉 Analizar respuesta con backend
-      const analisis = await fetch("https://aurea-backend-two.vercel.app/api/analizar-respuesta", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mensaje,
-          respuesta,
-          institucion,
-          tipoInstitucion,
-          correo: sessionId
-        })
-      });
-
-      const datosAnalisis = await analisis.json();
-
       return new Response(JSON.stringify({
-        respuesta,
+        respuesta: respuestaFinal,
         tema,
-        sos: esSOS,
-        ...datosAnalisis
+        nuevaCalificacion,
+        certeza,
+        justificación,
+        sos
       }), {
         status: 200,
         headers: {
           'Content-Type': 'application/json',
           'Access-Control-Allow-Origin': allowedOrigin,
-        },
+        }
       });
 
     } catch (error) {
-      return new Response(JSON.stringify({ error: 'Error interno del servidor' }), {
+      console.error("💥 Error en AUREA handler:", error);
+      return new Response(JSON.stringify({ error: "Error interno del servidor" }), {
         status: 500,
         headers: {
           'Content-Type': 'application/json',
           'Access-Control-Allow-Origin': allowedOrigin,
-        },
+        }
       });
     }
   }
@@ -144,6 +141,6 @@ En la siguiente línea, escribe el tema emocional principal detectado en una sol
     headers: {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': allowedOrigin,
-    },
+    }
   });
 }
