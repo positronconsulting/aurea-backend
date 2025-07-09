@@ -11,7 +11,7 @@ const openai = new OpenAI({
 export default async function handler(req, res) {
   const allowedOrigin = 'https://www.positronconsulting.com';
 
-  // CORS preflight
+  // 👉 CORS preflight
   if (req.method === 'OPTIONS') {
     return res.status(204).setHeader('Access-Control-Allow-Origin', allowedOrigin)
       .setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
@@ -19,6 +19,7 @@ export default async function handler(req, res) {
       .end();
   }
 
+  // 👉 Solo POST
   if (req.method !== 'POST') {
     return res.status(405).json({ error: "Método no permitido" });
   }
@@ -49,7 +50,7 @@ Con base en la información que recibes:
 - Limita tu respuesta a un máximo de 1000 caracteres.
 - No uses signos de exclamación. No prometas soluciones. Acompaña.
 
-Después de tu respuesta, escribe tres guiones (`---`) en una nueva línea. Luego escribe:
+Después de tu respuesta, escribe tres guiones (\`---\`) en una nueva línea. Luego escribe:
 
 - SOS → si notas señales claras de crisis emocional.
 - OK → si no hay señales de riesgo.
@@ -59,8 +60,7 @@ Historial reciente:
 ${historial.join('\n')}
 
 Mensaje actual:
-${mensaje}
-    `.trim();
+${mensaje}`.trim();
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o",
@@ -87,7 +87,7 @@ ${mensaje}
     });
 
   } catch (error) {
-    console.error("🔥 Error general en aurea.js:", error.message);
+    console.error("🔥 Error general en aurea.js:", error);
     return res.status(500).json({ error: "Error interno en AUREA" });
   }
 }
