@@ -13,22 +13,23 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-export async function OPTIONS(req) {
-  return new Response(null, {
-    status: 204,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type,x-session-id,x-institucion,x-tipo",
-    },
-  });
-}
+export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-session-id,x-institucion,x-tipo");
 
-export async function POST(req) {
-  const { mensaje, nombre } = await req.json();
-  const correo = req.headers.get("x-session-id") || "desconocido@correo.com";
-  const institucion = req.headers.get("x-institucion") || "Sin Institución";
-  const tipoInstitucion = req.headers.get("x-tipo") || "Social";
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Método no permitido" });
+  }
+
+  const { mensaje, nombre } = req.body;
+  const correo = req.headers["x-session-id"] || "desconocido@correo.com";
+  const institucion = req.headers["x-institucion"] || "Sin Institución";
+  const tipoInstitucion = req.headers["x-tipo"] || "Social";
 
   try {
     const historial = [
@@ -121,37 +122,19 @@ Devuelve también el tema detectado, el nivel de calificación emocional, el niv
       });
     }
 
-    return new Response(
-      JSON.stringify({
-        respuesta,
-        tema,
-        calificacion,
-        certeza,
-        justificacion,
-        pregunta1,
-        pregunta2,
-        sos: esSOS,
-      }),
-      {
-        status: 200,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    return res.status(200).json({
+      respuesta,
+      tema,
+      calificacion,
+      certeza,
+      justificacion,
+      pregunta1,
+      pregunta2,
+      sos: esSOS,
+    });
   } catch (error) {
     console.error("🧨 Error general en analizar-respuesta:", error);
-    return new Response(
-      JSON.stringify({ error: error.message }),
-      {
-        status: 500,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    return res.status(500).json({ error: error.message });
   }
 }
 
