@@ -1,4 +1,3 @@
-
 // archivo: /pages/api/aurea.js
 
 import { OpenAI } from "openai";
@@ -11,7 +10,7 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-session-id,x-institucion,x-tipo");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-session-id,x-institucion,x-tipo"); // Added x-tipo
     return res.status(204).end();
   }
 
@@ -21,7 +20,7 @@ export default async function handler(req, res) {
 
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-session-id,x-institucion,x-tipo");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-session-id,x-institucion,x-tipo"); // Added x-tipo
 
   const { mensaje } = req.body;
   const correo = req.headers["x-session-id"] || "desconocido@correo.com";

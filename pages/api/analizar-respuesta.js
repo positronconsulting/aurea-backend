@@ -12,7 +12,7 @@ export async function OPTIONS() {
     headers: {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type,x-session-id,x-institucion,x-tipo,x-consentimiento,x-correo-sos",
+      "Access-Control-Allow-Headers": "Content-Type,x-session-id,x-institucion,x-tipo,x-consentimiento,x-correo-sos", // Added all custom headers
     },
   });
 }
@@ -98,7 +98,7 @@ Devuelve también el tema detectado, el nivel de calificación emocional, el niv
       status: 200,
       headers: {
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type,x-session-id,x-institucion,x-tipo,x-consentimiento,x-correo-sos",
+        "Access-Control-Allow-Headers": "Content-Type,x-session-id,x-institucion,x-tipo,x-consentimiento,x-correo-sos", // Added all custom headers
         "Content-Type": "application/json",
       }
     });
@@ -109,7 +109,7 @@ Devuelve también el tema detectado, el nivel de calificación emocional, el niv
       status: 500,
       headers: {
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type,x-session-id,x-institucion,x-tipo,x-consentimiento,x-correo-sos",
+        "Access-Control-Allow-Headers": "Content-Type,x-session-id,x-institucion,x-tipo,x-consentimiento,x-correo-sos", // Added all custom headers
         "Content-Type": "application/json",
       }
     });
