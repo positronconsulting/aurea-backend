@@ -24,6 +24,7 @@ export default async function handler(req) {
       const { mensaje } = await req.json();
       const sessionId = req.headers.get('x-session-id') || 'demo';
       const institucion = req.headers.get('x-institucion') || 'desconocida';
+      const tipoInstitucion = req.headers.get('x-tipo') || 'sin_tipo';
 
       if (!sessionHistories.has(sessionId)) {
         sessionHistories.set(sessionId, []);
@@ -85,6 +86,7 @@ En la siguiente línea, escribe el tema emocional principal detectado en una sol
         sessionHistories.set(sessionId, history.slice(-MAX_TURNS));
       }
 
+      // 👉 Registrar en Sheets
       await fetch("https://script.google.com/macros/s/AKfycbwhooKRTdqs-Mnf3oFylF_rE2kM1AMZ_a4XUOEJQmnGew80rYvP72l_wlfgsAtfL6qVSQ/exec", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -98,21 +100,27 @@ En la siguiente línea, escribe el tema emocional principal detectado en una sol
         })
       });
 
-      if (esSOS) {
-        await fetch("https://www.positronconsulting.com/_functions/alertaSOS", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            correoUsuario: sessionId,
-            institucion,
-            mensajeUsuario: mensaje,
-            respuestaAurea: respuesta,
-            temaDetectado: tema
-          })
-        });
-      }
+      // 👉 Analizar respuesta con backend
+      const analisis = await fetch("https://aurea-backend-two.vercel.app/api/analizar-respuesta", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mensaje,
+          respuesta,
+          institucion,
+          tipoInstitucion,
+          correo: sessionId
+        })
+      });
 
-      return new Response(JSON.stringify({ respuesta, tema, sos: esSOS }), {
+      const datosAnalisis = await analisis.json();
+
+      return new Response(JSON.stringify({
+        respuesta,
+        tema,
+        sos: esSOS,
+        ...datosAnalisis
+      }), {
         status: 200,
         headers: {
           'Content-Type': 'application/json',
@@ -139,4 +147,3 @@ En la siguiente línea, escribe el tema emocional principal detectado en una sol
     },
   });
 }
-
