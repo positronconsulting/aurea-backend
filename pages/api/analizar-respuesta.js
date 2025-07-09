@@ -49,8 +49,7 @@ export default async function handler(req) {
     console.log("📩 Mensaje recibido para analizar:", mensaje);
     console.log("🧠 Contexto:", { nombre, correo, institucion, tipoInstitucion });
 
-    const prompt = `
-Eres un analista psicológico que evalúa mensajes de usuarios para un sistema de acompañamiento emocional. Analizas mensajes en contexto clínico, considerando antecedentes recientes, nombre del usuario y temas previamente abordados.
+    const prompt = `Eres un analista psicológico que evalúa mensajes de usuarios para un sistema de acompañamiento emocional. Analizas mensajes en contexto clínico, considerando antecedentes recientes, nombre del usuario y temas previamente abordados.
 
 Tu análisis combina criterios del DSM-5-TR, CIE-11, guías de la APA y el NIH/NIMH, además de protocolos de Terapia Cognitivo-Conductual, Psicoterapia Humanista y la guía WHO mhGAP.
 
