@@ -1,140 +1,114 @@
 // archivo: /pages/api/analizar-respuesta.js
 
-import { GoogleSpreadsheet } from "google-spreadsheet";
-import nodemailer from "nodemailer";
-import { OpenAI } from "openai";
+import { GoogleSpreadsheet } from 'google-spreadsheet';
+import nodemailer from 'nodemailer';
 
-const docId = process.env.SHEET_ID;
-const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
-const privateKey = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n");
-const logCalificacionesURL = process.env.LOG_CALIFICACIONES_URL;
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type,x-session-id,x-institucion,x-tipo",
+    },
+  });
+}
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-session-id,x-institucion,x-tipo");
-
-  if (req.method === "OPTIONS") {
-    return res.status(204).end();
-  }
-
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Método no permitido" });
-  }
-
-  const { mensaje, nombre } = req.body;
-  const correo = req.headers["x-session-id"] || "desconocido@correo.com";
-  const institucion = req.headers["x-institucion"] || "Sin Institución";
-  const tipoInstitucion = req.headers["x-tipo"] || "Social";
-
+export async function POST(req) {
   try {
-    const historial = [
-      {
-        role: "system",
-        content: `Eres AUREA, un sistema de acompañamiento emocional cálido, humano y sin juicios. Acompañas usando herramientas de la Terapia Cognitivo Conductual, el enfoque neurocognitivo conductual, la Psicología Humanista y la psicoterapia Gestalt.
+    const { mensaje, respuesta, tema, calificacionAnterior, nuevaCalificacion, certeza, justificación, pregunta1, pregunta2 } = await req.json();
+    const correo = req.headers.get("x-session-id") || "desconocido@correo.com";
+    const institucion = req.headers.get("x-institucion") || "Sin Institución";
+    const tipoInstitucion = req.headers.get("x-tipo") || "Social";
 
-Tu estilo es cercano, claro y compasivo, aunque no eres psicólogo ni das diagnósticos ni consejos médicos. Tu objetivo es ayudar a las personas a explorar lo que sienten, identificar emociones, reflexionar sobre su bienestar y avanzar en su proceso personal.
+    const fecha = new Date().toISOString();
 
-Solo puedes hablar sobre salud emocional. Si el usuario pide algo fuera de eso (por ejemplo, temas técnicos, diagnósticos médicos o preguntas personales), respóndele con respeto que no puedes ayudar en ese tema.
+    const logData = {
+      fecha,
+      correo,
+      institucion,
+      tipoInstitucion,
+      tema,
+      calificacionAnterior,
+      nuevaCalificacion,
+      certeza,
+      justificación,
+      pregunta1,
+      pregunta2,
+    };
 
-Además de acompañar con tus respuestas, analiza el mensaje del usuario usando criterios del DSM-5-TR, ICD-11, APA, NIH/NIMH, protocolos de Terapia Cognitivo Conductual y la guía WHO mhGAP.
-
-Haz una introspección guiada y natural. Si detectas señales textuales o en contexto de crisis emocional, suicidio, burnout, peligro físico, encierro, acoso, bullying, bulimia, anorexia o trastornos alimenticios, escribe exactamente: "SOS".
-
-Devuelve también el tema detectado, el nivel de calificación emocional, el nivel de certeza, y si es posible, una justificación. Si el mensaje no es emocional, responde con respeto que solo puedes ayudar en temas de salud emocional.`,
-      },
-      { role: "user", content: mensaje },
-    ];
-
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o",
-      messages: historial,
-      temperature: 0.7,
+    await fetch("https://script.google.com/macros/s/AKfycbyh1QuRv0byLuaEWxxKmPnz_qCwifTHNsGA-I9Kh_9saEAG76MJ06K2wDj_PWQqb0xkdg/exec", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(logData),
     });
 
-    const respuesta = completion.choices[0]?.message?.content || "No tengo respuesta.";
-
-    let tema = respuesta.match(/TEMA: (.*)/i)?.[1]?.trim() || "";
-    let calificacion = respuesta.match(/CALIFICACIÓN: (\d+)/i)?.[1] || "";
-    let certeza = respuesta.match(/CERTEZA: (\d+)/i)?.[1] || "";
-    let justificacion = respuesta.match(/JUSTIFICACIÓN: (.*)/i)?.[1]?.trim() || "";
-    let pregunta1 = respuesta.match(/PREGUNTA 1: (.*)/i)?.[1]?.trim() || "";
-    let pregunta2 = respuesta.match(/PREGUNTA 2: (.*)/i)?.[1]?.trim() || "";
-
-    const esSOS = respuesta.includes("SOS");
-
-    // Obtener calificación anterior
-    let calificacionAnterior = "";
-    try {
-      const doc = new GoogleSpreadsheet(docId);
-      await doc.useServiceAccountAuth({ client_email: clientEmail, private_key: privateKey });
-      await doc.loadInfo();
-      const sheet = doc.sheetsByTitle[tipoInstitucion];
-      const rows = await sheet.getRows();
-      const row = rows.find((r) => r.Correo === correo);
-      calificacionAnterior = row ? row[tema] || "" : "";
-    } catch (error) {
-      console.error("Error buscando calificación previa:", error);
-    }
-
-    // Log de calificaciones
-    try {
-      await fetch(logCalificacionesURL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          correo,
-          nombre,
-          institucion,
-          tipoInstitucion,
-          tema,
-          calificacionAnterior,
-          nuevaCalificacion: calificacion,
-          certeza,
-          justificación,
-          pregunta1,
-          pregunta2,
-        }),
-      });
-    } catch (error) {
-      console.error("Error enviando al log:", error);
-    }
-
-    // Envío de correo SOS
-    if (esSOS) {
+    if (respuesta.includes("SOS")) {
+      // 1. Enviar correo
       const transporter = nodemailer.createTransport({
         service: "gmail",
         auth: {
-          user: process.env.MAIL_SOS,
-          pass: process.env.MAIL_SOS_PASS,
+          user: process.env.EMAIL_SOS,
+          pass: process.env.EMAIL_PASS,
         },
       });
 
       await transporter.sendMail({
-        from: `AUREA <${process.env.MAIL_SOS}>`,
-        to: "alfredo@positronconsulting.com",
-        subject: "🚨 Alerta SOS desde AUREA",
-        text: `Mensaje del usuario:\n\n${mensaje}\n\nRespuesta de AUREA:\n\n${respuesta}`,
+        from: `"AUREA" <${process.env.EMAIL_SOS}>`,
+        to: `alfredo@positronconsulting.com`,
+        subject: `⚠️ Alerta SOS - ${correo}`,
+        text: `Mensaje: ${mensaje}\n\nRespuesta: ${respuesta}`,
       });
+
+      // 2. Guardar en HistorialSOS
+      const doc = new GoogleSpreadsheet(process.env.SHEET_ID);
+      await doc.useServiceAccountAuth({
+        client_email: process.env.GS_CLIENT_EMAIL,
+        private_key: process.env.GS_PRIVATE_KEY.replace(/\\n/g, "\n"),
+      });
+      await doc.loadInfo();
+
+      const hojaHistorial = doc.sheetsByTitle["HistorialSOS"];
+      await hojaHistorial.addRow({
+        Timestamp: fecha,
+        Institución: institucion,
+        Correo: correo,
+        Respuesta: respuesta,
+        Tema: tema,
+        Autorizado: "No",
+      });
+
+      // 3. Registrar tema en TemasInstitución
+      const hojaTemas = doc.sheetsByTitle["TemasInstitución"];
+      await hojaTemas.loadHeaderRow();
+      const filas = await hojaTemas.getRows();
+
+      const filaExistente = filas.find(row => row.Institución === institucion && row.Tema === tema);
+      if (filaExistente) {
+        filaExistente.Menciones = parseInt(filaExistente.Menciones) + 1;
+        await filaExistente.save();
+      } else {
+        await hojaTemas.addRow({ Institución: institucion, Tema: tema, Menciones: 1 });
+      }
     }
 
-    return res.status(200).json({
-      respuesta,
-      tema,
-      calificacion,
-      certeza,
-      justificacion,
-      pregunta1,
-      pregunta2,
-      sos: esSOS,
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Content-Type": "application/json",
+      },
     });
-  } catch (error) {
-    console.error("🧨 Error general en analizar-respuesta:", error);
-    return res.status(500).json({ error: error.message });
+
+  } catch (err) {
+    console.error("🧨 Error en analizar-respuesta:", err.message);
+    return new Response(JSON.stringify({ ok: false, error: err.message }), {
+      status: 500,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Content-Type": "application/json",
+      },
+    });
   }
 }
 
