@@ -1,62 +1,94 @@
-// archivo: /pages/api/aurea.js
+export const config = {
+  runtime: 'nodejs',
+};
 
-import { OpenAI } from "openai";
+import { OpenAI } from 'openai';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
 export default async function handler(req, res) {
-  if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-session-id,x-institucion,x-tipo"); // Added x-tipo
-    return res.status(204).end();
+  const allowedOrigin = 'https://www.positronconsulting.com';
+
+  // CORS preflight
+  if (req.method === 'OPTIONS') {
+    return res.status(204).setHeader('Access-Control-Allow-Origin', allowedOrigin)
+      .setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+      .setHeader('Access-Control-Allow-Headers', 'Content-Type, x-session-id, x-institucion')
+      .end();
   }
 
-  if (req.method !== "POST") {
+  if (req.method !== 'POST') {
     return res.status(405).json({ error: "Método no permitido" });
   }
 
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-session-id,x-institucion,x-tipo"); // Added x-tipo
-
-  const { mensaje } = req.body;
-  const correo = req.headers["x-session-id"] || "desconocido@correo.com";
-  const institucion = req.headers["x-institucion"] || "Sin Institución";
-  const tipoInstitucion = req.headers["x-tipo"] || "Social";
-
-  const historial = [
-    {
-      role: "system",
-      content: `Eres AUREA, un sistema de acompañamiento emocional cálido, humano y sin juicios. Acompañas usando herramientas de la Terapia Cognitivo Conductual, el enfoque neurocognitivo conductual, la Psicología Humanista y la psicoterapia Gestalt.
-
-Tu estilo es cercano, claro y compasivo, aunque no eres psicólogo ni das diagnósticos ni consejos médicos. Tu objetivo es ayudar a las personas a explorar lo que sienten, identificar emociones, reflexionar sobre su bienestar y avanzar en su proceso personal.
-
-Solo puedes hablar sobre salud emocional. Si el usuario pide algo fuera de eso (por ejemplo, temas técnicos, diagnósticos médicos o preguntas personales), respóndele con respeto que no puedes ayudar en ese tema.
-
-Además de acompañar con tus respuestas, analiza el mensaje del usuario usando criterios del DSM-5-TR, ICD-11, APA, NIH/NIMH, protocolos de Terapia Cognitivo Conductual y la guía WHO mhGAP.
-
-Haz una introspección guiada y natural. Si detectas señales textuales o en contexto de crisis emocional, suicidio, burnout, peligro físico, encierro, acoso, bullying, bulimia, anorexia o trastornos alimenticios, escribe exactamente: "SOS".
-
-Devuelve también el tema detectado, el nivel de calificación emocional, el nivel de certeza, y si es posible, una justificación. Si el mensaje no es emocional, responde con respeto que solo puedes ayudar en temas de salud emocional.`,
-    },
-    { role: "user", content: mensaje },
-  ];
-
   try {
+    const {
+      mensaje,
+      historial = [],
+      nombre = "",
+      institucion = "",
+      tema = "",
+      calificacionMasAlta = null
+    } = req.body;
+
+    console.log("🧸 AUREA recibe:", { nombre, institucion, tema, calificacionMasAlta });
+
+    const prompt = `
+Eres AUREA, un sistema de acompañamiento emocional cálido, humano y sin juicios. Tu función es acompañar a las personas en sus procesos emocionales con presencia y empatía. Utilizas herramientas de la Terapia Cognitivo Conductual (TCC), la Psicología Humanista y la psicoterapia Gestalt.
+
+Tu tono es cercano, compasivo, reflexivo y claro. No diagnosticas, no etiquetas, no recetas. Acompañas desde el respeto y la validación emocional. Si te preguntan algo fuera de tus funciones simplemente responde de forma respetuosa que no es un tema que puedas desarrollar.
+
+Con base en la información que recibes:
+- Reconoce el tema emocional principal: ${tema}
+- Si la persona tiene una calificación emocional alta (${calificacionMasAlta}/100), tenlo en cuenta para acompañar con más delicadeza.
+- Apóyate en el historial para dar seguimiento al proceso.
+- Dirígete a la persona por su nombre ("${nombre}"), pero no lo repitas en cada frase.
+- Usa preguntas suaves, abiertas y profundas que inviten a la introspección con técnicas de TCC.
+- Si notas que ha habido un patrón (por ejemplo: estrés, ansiedad o tristeza recurrentes), haz una reflexión sobre eso.
+- Limita tu respuesta a un máximo de 1000 caracteres.
+- No uses signos de exclamación. No prometas soluciones. Acompaña.
+
+Después de tu respuesta, escribe tres guiones (`---`) en una nueva línea. Luego escribe:
+
+- SOS → si notas señales claras de crisis emocional.
+- OK → si no hay señales de riesgo.
+- Luego, en otra línea, confirma el tema emocional principal detectado.
+
+Historial reciente:
+${historial.join('\n')}
+
+Mensaje actual:
+${mensaje}
+    `.trim();
+
     const completion = await openai.chat.completions.create({
       model: "gpt-4o",
-      messages: historial,
       temperature: 0.7,
+      messages: [{ role: "user", content: prompt }],
     });
 
-    const respuesta = completion.choices[0]?.message?.content || "No tengo respuesta.";
+    const raw = completion.choices?.[0]?.message?.content || "";
+    const [respuestaLimpia, metaBloque] = raw.split('---');
+    const metaLíneas = (metaBloque || "").trim().split('\n');
+    const indicadorSOS = metaLíneas[0]?.toLowerCase().trim();
+    const temaDetectado = metaLíneas[1]?.toLowerCase().trim() || "ninguno";
+    const esSOS = indicadorSOS === "sos";
 
-    return res.status(200).json({ respuesta });
+    const respuesta = (respuestaLimpia || "").trim();
+
+    console.log("🧠 AUREA generó respuesta:", respuesta);
+    console.log("📌 Meta:", { esSOS, temaDetectado });
+
+    return res.status(200).json({
+      respuesta,
+      tema: temaDetectado,
+      sos: esSOS
+    });
+
   } catch (error) {
-    console.error("🧨 Error en /api/aurea:", error);
-    return res.status(500).json({ error: "Error al generar la respuesta." });
+    console.error("🔥 Error general en aurea.js:", error.message);
+    return res.status(500).json({ error: "Error interno en AUREA" });
   }
 }
