@@ -55,8 +55,16 @@ Devuelve también el tema detectado, el nivel de calificación emocional, el niv
     });
 
     const raw = completion.choices[0]?.message?.content || "No tengo respuesta.";
-    let respuesta = raw;
 
+    // Limpieza de metadatos visibles en respuesta
+    const respuesta = raw
+      .replace(/Calificación:.*$/i, "")
+      .replace(/Certeza:.*$/i, "")
+      .replace(/Tema:.*$/i, "")
+      .replace(/Justificación:.*$/i, "")
+      .trim();
+
+    // Extracción de metadatos reales
     let tema = "", nuevaCalificacion = "", certeza = "", justificacion = "";
     const calificacionRegex = /Calificación:\s*(\d+)/i;
     const certezaRegex = /Certeza:\s*(\d+%?)/i;
@@ -140,3 +148,4 @@ async function enviarCorreoSOS(correoUsuario, institucion, mensaje, respuesta, c
     console.error('❌ Error al enviar correo SOS:', error.message);
   }
 }
+
