@@ -1,134 +1,170 @@
-import { OpenAI } from "openai";
+// pages/api/analizar-respuesta.js
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+import { NextResponse } from 'next/server';
+import { GoogleSpreadsheet } from 'google-spreadsheet';
+import OpenAI from 'openai';
+import { JWT } from 'google-auth-library';
+import nodemailer from 'nodemailer';
 
-export const config = {
-  runtime: 'edge',
-};
-
-export async function OPTIONS() {
-  return new Response(null, {
-    status: 204,
+export async function OPTIONS(req) {
+  return new NextResponse(null, {
+    status: 200,
     headers: {
-      'Access-Control-Allow-Origin': 'https://www.positronconsulting.com',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, x-session-id, x-institucion, x-tipo',
-    },
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, x-session-id, x-institucion, x-tipo'
+    }
   });
 }
 
 export async function POST(req) {
   try {
     const body = await req.json();
-    const { mensaje, historial } = body;
 
-    if (!mensaje) {
-      return new Response(JSON.stringify({ error: "Mensaje vacío" }), {
-        status: 400,
-        headers: {
-          'Access-Control-Allow-Origin': 'https://www.positronconsulting.com',
-          'Content-Type': 'application/json'
-        }
-      });
-    }
+    const {
+      mensaje,
+      historial = [],
+      nombre,
+      correo,
+      institucion,
+      tipoInstitucion,
+      temas,
+      calificaciones
+    } = body;
+
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
     const prompt = `
-Eres AUREA, un sistema de acompañamiento emocional cálido, humano y sin juicios. Acompañas usando herramientas de la Terapia Cognitivo Conductual (TCC), psicología humanista y psicoterapia Gestalt.
+Eres un analista psicológico que evalúa mensajes para un sistema de acompañamiento emocional. Usa criterios del DSM-5-TR, CIE-11, guías de la APA, NIH/NIMH, TCC y la guía WHO mhGAP. Responde con enfoque de la Terapia Cognitivo-Conductual y Psicología Humanista.
 
-No eres psicólogo ni das diagnósticos ni consejos médicos. Tu tarea es:
-1. Detectar si el mensaje trata sobre salud mental y si es así, identificar el tema emocional principal.
-2. Evaluar el nivel emocional en una escala de 0 a 10 (donde 0 es neutral y 10 es máximo impacto).
-3. Calificar el estado actual del usuario sobre ese tema con una calificación de 0 a 100.
-4. Evaluar si hay señales de crisis o peligro (bullying, suicidio, encierro, acoso, burnout, trastornos alimenticios, peligro físico, etc.). Si es así, debes escribir "SOS".
-5. Si no tienes suficiente información para confirmar con certeza el tema o la calificación, haz una pregunta emocional introspectiva, de forma cálida y humana, basada en TCC y Gestalt.
-6. Si tienes certeza alta, responde con acompañamiento emocional breve y profundo sobre el tema.
-7. Si el mensaje no habla de salud mental, responde amablemente que solo puedes acompañar en temas emocionales o psicológicos.
+Tareas:
+1. Identifica cuál de los siguientes temas está siendo tratado: ${temas.join(', ')}.
+2. Asigna una calificación del 1 al 10 al tema detectado.
+3. Da un porcentaje de certeza de tu respuesta (0-100).
+4. Si detectas palabras literales o contexto de crisis emocional, suicidio, burnout, peligro, peligro físico, encierro, acoso, bullying, bulimia, anorexia o trastornos alimenticios, responde: SOS.
+5. Sugiere UNA pregunta conversacional con enfoque humanista para profundizar el análisis y aumentar la certeza.
+6. Especifica qué tipo de instrumento psicológico (ej. PHQ-9, GAD-7, etc.) utilizaste para justificar tu respuesta.
 
-Usa esta estructura JSON, sin explicaciones adicionales:
+Formato de respuesta JSON:
 
 {
-  "respuesta": "Tu respuesta escrita aquí",
-  "tema": "una sola palabra que describa el tema (ej. ansiedad, autoestima, duelo, etc.)",
-  "nuevaCalificacion": 85,
-  "certeza": 91,
-  "sos": true/false
+  "tema": "Ansiedad",
+  "nuevaCalificacion": 6,
+  "certeza": 82,
+  "sos": false,
+  "pregunta": "¿Sientes que esta preocupación ha interferido con tu día a día?",
+  "justificacion": "Basado en criterios del GAD-7 y observaciones del discurso"
 }
 
-Mensaje recibido:
-"${mensaje}"
+Historial reciente:
+${historial.join('\n')}
 
-Historial previo de conversación:
-"""
-${historial || "Sin historial previo."}
-"""
+Mensaje actual:
+${mensaje}
 `;
 
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o",
-      temperature: 0.7,
-      messages: [
-        {
-          role: "system",
-          content: "Responde solo con el JSON indicado. No incluyas ningún texto fuera del objeto JSON."
-        },
-        {
-          role: "user",
-          content: prompt
-        }
-      ]
+      model: 'gpt-4o',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.4
     });
 
-    const raw = completion.choices?.[0]?.message?.content?.trim();
-    let parsed;
+    const respuesta = completion.choices[0]?.message?.content?.trim();
 
+    let datos;
     try {
-      parsed = JSON.parse(raw);
+      datos = JSON.parse(respuesta);
     } catch (err) {
-      return new Response(JSON.stringify({ error: "Error al interpretar la respuesta de OpenAI", raw }), {
-        status: 500,
-        headers: {
-          'Access-Control-Allow-Origin': 'https://www.positronconsulting.com',
-          'Content-Type': 'application/json'
-        }
-      });
+      return NextResponse.json({ error: 'Error al parsear la respuesta de OpenAI', raw: respuesta }, { status: 500 });
     }
 
     const {
-      respuesta = "",
-      tema = "sin_tema",
-      nuevaCalificacion = null,
-      certeza = 0,
-      sos = false
-    } = parsed;
-
-    const confirmado = certeza >= 90 ? "OK" : "NO";
-
-    return new Response(JSON.stringify({
-      respuesta,
       tema,
       nuevaCalificacion,
       certeza,
-      confirmado,
-      fecha: new Date().toISOString().split("T")[0],
-      sos
-    }), {
+      sos,
+      pregunta,
+      justificacion
+    } = datos;
+
+    // Log en hoja logCalificaciones
+    const servicioCuenta = new JWT({
+      email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+      key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      scopes: ['https://www.googleapis.com/auth/spreadsheets']
+    });
+
+    const doc = new GoogleSpreadsheet(process.env.SHEET_ID, servicioCuenta);
+    await doc.loadInfo();
+
+    const hojaLog = doc.sheetsByTitle['logCalificaciones'];
+    await hojaLog.addRow({
+      Fecha: new Date().toISOString(),
+      Correo: correo,
+      Nombre: nombre,
+      Institucion: institucion,
+      Tipo: tipoInstitucion,
+      Tema: tema,
+      CalificacionAnterior: calificaciones?.[tema] ?? '',
+      NuevaCalificacion: nuevaCalificacion,
+      Certeza: certeza,
+      Justificacion: justificacion
+    });
+
+    if (sos === true || (typeof sos === 'string' && sos.toUpperCase() === 'SOS')) {
+      const hojaSOS = doc.sheetsByTitle['HistorialSOS'];
+      await hojaSOS.addRow({
+        Timestamp: new Date().toISOString(),
+        Institucion: institucion,
+        Correo: correo,
+        Mensaje: mensaje,
+        Respuesta: respuesta,
+        Historial: historial.join('\n'),
+        Tema: tema,
+        Autorizado: '' // Se llenará en sistemaAurea si da consentimiento
+      });
+
+      // Envío de correo automático a Positron
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          user: process.env.ALERTA_EMAIL,
+          pass: process.env.ALERTA_EMAIL_PASS
+        }
+      });
+
+      await transporter.sendMail({
+        from: `"Alerta SOS AUREA" <${process.env.ALERTA_EMAIL}>`,
+        to: 'alfredo@positronconsulting.com',
+        subject: `🚨 SOS detectado: ${tema}`,
+        html: `
+          <p><strong>Usuario:</strong> ${nombre} (${correo})</p>
+          <p><strong>Institución:</strong> ${institucion}</p>
+          <p><strong>Tema detectado:</strong> ${tema}</p>
+          <p><strong>Mensaje del usuario:</strong></p>
+          <p>${mensaje}</p>
+          <p><strong>Respuesta de AUREA:</strong></p>
+          <p>${respuesta}</p>
+        `
+      });
+    }
+
+    return NextResponse.json({
+      tema,
+      nuevaCalificacion,
+      certeza,
+      pregunta,
+      respuesta,
+      sos: sos === true || sos === 'SOS'
+    }, {
       status: 200,
       headers: {
-        'Access-Control-Allow-Origin': 'https://www.positronconsulting.com',
-        'Content-Type': 'application/json'
+        'Access-Control-Allow-Origin': '*'
       }
     });
 
-  } catch (err) {
-    console.error("❌ Error en analizar-respuesta.js:", err.message);
-    return new Response(JSON.stringify({ error: err.message }), {
-      status: 500,
-      headers: {
-        'Access-Control-Allow-Origin': 'https://www.positronconsulting.com',
-        'Content-Type': 'application/json'
-      }
-    });
+  } catch (error) {
+    console.error('❌ Error en analizar-respuesta:', error);
+    return NextResponse.json({ error: 'Error interno del servidor', detalle: error.message }, { status: 500 });
   }
 }
