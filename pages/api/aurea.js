@@ -1,4 +1,5 @@
-// archivo: /api/aurea.js
+
+// archivo: /pages/api/aurea.js
 
 import { OpenAI } from "openai";
 
@@ -6,22 +7,26 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-export async function OPTIONS(request) {
-  return new Response(null, {
-    status: 204,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type,x-session-id,x-institucion,x-tipo",
-    },
-  });
-}
+export default async function handler(req, res) {
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-session-id,x-institucion,x-tipo");
+    return res.status(204).end();
+  }
 
-export async function POST(request) {
-  const { mensaje } = await request.json();
-  const correo = request.headers.get("x-session-id") || "desconocido@correo.com";
-  const institucion = request.headers.get("x-institucion") || "Sin Institución";
-  const tipoInstitucion = request.headers.get("x-tipo") || "Social";
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Método no permitido" });
+  }
+
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,x-session-id,x-institucion,x-tipo");
+
+  const { mensaje } = req.body;
+  const correo = req.headers["x-session-id"] || "desconocido@correo.com";
+  const institucion = req.headers["x-institucion"] || "Sin Institución";
+  const tipoInstitucion = req.headers["x-tipo"] || "Social";
 
   const historial = [
     {
@@ -41,25 +46,18 @@ Devuelve también el tema detectado, el nivel de calificación emocional, el niv
     { role: "user", content: mensaje },
   ];
 
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4o",
-    messages: historial,
-    temperature: 0.7,
-  });
+  try {
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: historial,
+      temperature: 0.7,
+    });
 
-  const respuesta = completion.choices[0]?.message?.content || "No tengo respuesta.";
+    const respuesta = completion.choices[0]?.message?.content || "No tengo respuesta.";
 
-  return new Response(
-    JSON.stringify({
-      respuesta,
-    }),
-    {
-      status: 200,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Content-Type": "application/json",
-      },
-    }
-  );
+    return res.status(200).json({ respuesta });
+  } catch (error) {
+    console.error("🧨 Error en /api/aurea:", error);
+    return res.status(500).json({ error: "Error al generar la respuesta." });
+  }
 }
-
