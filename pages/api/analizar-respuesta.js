@@ -6,44 +6,6 @@ import { OpenAI } from 'openai';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Función para enviar datos a Google Apps Script (logCalificaciones.gs)
-async function registrarCalificacion(data) {
-  try {
-    await fetch(process.env.URL_LOG_CALIFICACIONES, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
-    });
-  } catch (error) {
-    console.error('🧨 Error al registrar en logCalificaciones:', error.message);
-  }
-}
-
-// Función para enviar correo de alerta SOS
-async function enviarCorreoSOS(correoUsuario, institucion, mensaje, respuesta, consentimiento, correoSOS) {
-  try {
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.EMAIL_POSITRON,
-        pass: process.env.PASS_POSITRON,
-      },
-    });
-
-    const destinatarios = [process.env.EMAIL_POSITRON];
-    if (consentimiento && correoSOS) destinatarios.push(correoSOS);
-
-    await transporter.sendMail({
-      from: `"AUREA" <${process.env.EMAIL_POSITRON}>`,
-      to: destinatarios,
-      subject: `⚠️ Alerta SOS - ${institucion}`,
-      text: `Mensaje del usuario: ${mensaje}\n\nRespuesta de AUREA: ${respuesta}`,
-    });
-  } catch (error) {
-    console.error('❌ Error al enviar correo SOS:', error.message);
-  }
-}
-
 export async function OPTIONS() {
   return new Response(null, {
     status: 204,
@@ -78,7 +40,7 @@ Además de acompañar con tus respuestas, analiza el mensaje del usuario usando 
 
 Haz una introspección guiada y natural. Si detectas señales textuales o en contexto de crisis emocional, suicidio, burnout, peligro físico, encierro, acoso, bullying, bulimia, anorexia o trastornos alimenticios, escribe exactamente: "SOS".
 
-Devuelve también el tema detectado, el nivel de calificación emocional, el nivel de certeza, y si es posible, una justificación. Si el mensaje no es emocional, responde con respeto que solo puedes ayudar en temas de salud emocional.`,
+Devuelve también el tema detectado, el nivel de calificación emocional, el nivel de certeza, y si es posible, una justificación. Si el mensaje no es emocional, responde con respeto que solo puedes ayudar en temas de salud emocional.`
       },
       { role: "user", content: mensaje }
     ];
@@ -136,6 +98,7 @@ Devuelve también el tema detectado, el nivel de calificación emocional, el niv
       status: 200,
       headers: {
         "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "Content-Type,x-session-id,x-institucion,x-tipo,x-consentimiento,x-correo-sos",
         "Content-Type": "application/json",
       }
     });
@@ -146,8 +109,46 @@ Devuelve también el tema detectado, el nivel de calificación emocional, el niv
       status: 500,
       headers: {
         "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "Content-Type,x-session-id,x-institucion,x-tipo,x-consentimiento,x-correo-sos",
         "Content-Type": "application/json",
       }
     });
+  }
+}
+
+// --- funciones auxiliares ya existentes (sin cambios) ---
+async function registrarCalificacion(data) {
+  try {
+    await fetch(process.env.URL_LOG_CALIFICACIONES, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+  } catch (error) {
+    console.error('🧨 Error al registrar en logCalificaciones:', error.message);
+  }
+}
+
+async function enviarCorreoSOS(correoUsuario, institucion, mensaje, respuesta, consentimiento, correoSOS) {
+  try {
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.EMAIL_POSITRON,
+        pass: process.env.PASS_POSITRON,
+      },
+    });
+
+    const destinatarios = [process.env.EMAIL_POSITRON];
+    if (consentimiento && correoSOS) destinatarios.push(correoSOS);
+
+    await transporter.sendMail({
+      from: `"AUREA" <${process.env.EMAIL_POSITRON}>`,
+      to: destinatarios,
+      subject: `⚠️ Alerta SOS - ${institucion}`,
+      text: `Mensaje del usuario: ${mensaje}\n\nRespuesta de AUREA: ${respuesta}`,
+    });
+  } catch (error) {
+    console.error('❌ Error al enviar correo SOS:', error.message);
   }
 }
