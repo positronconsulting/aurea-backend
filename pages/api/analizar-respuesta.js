@@ -1,41 +1,34 @@
-import { OpenAI } from "openai";
 import { GoogleSpreadsheet } from "google-spreadsheet";
 import nodemailer from "nodemailer";
+import { OpenAI } from "openai";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-// Google Sheets setup
-const doc = new GoogleSpreadsheet(process.env.GOOGLE_SHEET_ID);
-const jwt = new google.auth.JWT({
-  email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-  key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-  scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Función principal
-export default async function handler(req, res) {
-  // Manejo CORS para cualquier método
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-session-id, x-institucion, x-tipo');
+// Manejo del preflight CORS
+export async function OPTIONS(req) {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type,x-session-id,x-institucion,x-tipo",
+    },
+  });
+}
 
-  // Preflight
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end();
-  }
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Método no permitido' });
-  }
-
+export async function POST(req) {
   try {
-    const { mensaje } = req.body;
-    const correo = req.headers['x-session-id'] || 'desconocido@correo.com';
-    const institucion = req.headers['x-institucion'] || 'Sin institución';
-    const tipoInstitucion = req.headers['x-tipo'] || 'Social';
+    const { mensaje, historial = [], nombre = "", pregunta1 = "", pregunta2 = "" } = await req.json();
 
-    // Prompt
-    const historial = [
+    const correo = req.headers.get("x-session-id") || "desconocido@correo.com";
+    const institucion = req.headers.get("x-institucion") || "Sin Institución";
+    const tipoInstitucion = req.headers.get("x-tipo") || "Social";
+    const fecha = new Date().toISOString();
+
+    // Construir historial de conversación
+    const mensajes = [
       {
         role: "system",
         content: `Eres AUREA, un sistema de acompañamiento emocional cálido, humano y sin juicios. Acompañas usando herramientas de la Terapia Cognitivo Conductual, el enfoque neurocognitivo conductual, la Psicología Humanista y la psicoterapia Gestalt.
@@ -48,83 +41,111 @@ Además de acompañar con tus respuestas, analiza el mensaje del usuario usando 
 
 Haz una introspección guiada y natural. Si detectas señales textuales o en contexto de crisis emocional, suicidio, burnout, peligro físico, encierro, acoso, bullying, bulimia, anorexia o trastornos alimenticios, escribe exactamente: "SOS".
 
-Devuelve también el tema detectado, el nivel de calificación emocional, el nivel de certeza, y si es posible, una justificación. Si el mensaje no es emocional, responde con respeto que solo puedes ayudar en temas de salud emocional.`
+Devuelve también el tema detectado (una palabra), el nivel de calificación emocional (de 1 a 10), el nivel de certeza (porcentaje), y si es posible, una justificación. Si el mensaje no es emocional, responde con respeto que solo puedes ayudar en temas de salud emocional.`,
       },
-      { role: "user", content: mensaje }
+      ...historial,
+      { role: "user", content: mensaje },
     ];
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o",
-      messages: historial,
+      messages: mensajes,
       temperature: 0.7,
-      response_format: "json"
     });
 
-    const raw = completion.choices?.[0]?.message?.content || "{}";
-    const parsed = JSON.parse(raw);
+    const respuesta = completion.choices[0]?.message?.content || "No tengo respuesta.";
 
-    const respuesta = parsed.respuesta || "Gracias por compartir lo que sientes.";
-    const tema = parsed.tema || "Sin tema";
-    const nuevaCalificacion = parsed.nuevaCalificacion || "";
-    const certeza = parsed.certeza || "";
-    const justificacion = parsed.justificacion || "";
-    const pregunta1 = parsed.pregunta || "";
-    const sos = parsed.sos === "SOS";
+    // Extraer datos de la respuesta
+    const regexTema = /Tema\s*[:：]?\s*(.*)/i;
+    const regexCalif = /Calificación\s*[:：]?\s*(\d+)/i;
+    const regexCerteza = /Certeza\s*[:：]?\s*(\d+)%/i;
+    const regexJust = /Justificación\s*[:：]?\s*(.*)/i;
 
-    // Acceso a hoja y guardado
-    await jwt.authorize();
-    await doc.useJwtAuth(jwt);
-    await doc.loadInfo();
-    const hoja = doc.sheetsByTitle["logCalificaciones"];
-    await hoja.addRow({
-      fecha: new Date().toISOString(),
-      correo,
-      nombre: "",
-      institucion,
-      tipoInstitucion,
-      tema,
-      calificacionAnterior: "",
-      nuevaCalificacion,
-      certeza,
-      justificación: justificacion,
-      pregunta1,
-      pregunta2: ""
-    });
+    const tema = respuesta.match(regexTema)?.[1]?.trim() || "Sin tema";
+    const nuevaCalificacion = respuesta.match(regexCalif)?.[1] || "";
+    const certeza = respuesta.match(regexCerteza)?.[1] || "";
+    const justificación = respuesta.match(regexJust)?.[1] || "";
+    const esSOS = respuesta.includes("SOS");
 
-    // Manejo de SOS
-    if (sos) {
-      const hojaSOS = doc.sheetsByTitle["HistorialSOS"];
-      await hojaSOS.addRow({
-        timestamp: new Date().toISOString(),
+    // Guardar en logCalificaciones
+    await fetch("https://script.google.com/macros/s/AKfycbyh1QuRv0byLuaEWxxKmPnz_qCwifTHNsGA-I9Kh_9saEAG76MJ06K2wDj_PWQqb0xkdg/exec", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
         correo,
+        nombre,
         institucion,
         tipoInstitucion,
-        mensaje,
-        respuesta,
         tema,
-        autorizado: "sí"
+        calificacionAnterior: "", // si lo tienes disponible, pásalo desde el frontend
+        nuevaCalificacion,
+        certeza,
+        justificación,
+        pregunta1,
+        pregunta2,
+      }),
+    });
+
+    // Si es SOS, guarda en HistorialSOS y manda correo
+    if (esSOS) {
+      const doc = new GoogleSpreadsheet("1hES4WSal9RLQOX2xAyLM2PKC9WP07Oc48rP5wVjCqAE");
+      await doc.useServiceAccountAuth({
+        client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+        private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+      });
+      await doc.loadInfo();
+      const sheet = doc.sheetsByTitle["HistorialSOS"];
+
+      await sheet.addRow({
+        Timestamp: fecha,
+        Correo: correo,
+        Institución: institucion,
+        Tipo: tipoInstitucion,
+        Tema: tema,
+        Autorizado: "Sí", // por ahora forzado, se puede ajustar si se incluye autoriza
+        Conversación: mensaje,
+        Respuesta: respuesta,
       });
 
       const transporter = nodemailer.createTransport({
         service: "gmail",
         auth: {
           user: process.env.EMAIL_SOS,
-          pass: process.env.EMAIL_PASS
-        }
+          pass: process.env.EMAIL_PASS,
+        },
       });
 
       await transporter.sendMail({
-        from: `"AUREA" <${process.env.EMAIL_SOS}>`,
-        to: "alfredo@positronconsulting.com",
-        subject: "🚨 Alerta SOS detectada",
-        text: `Mensaje: ${mensaje}\nRespuesta: ${respuesta}\nCorreo: ${correo}\nInstitución: ${institucion}\nTema: ${tema}`
+        from: `"AUREA Alertas" <${process.env.EMAIL_SOS}>`,
+        to: ["alfredo@positronconsulting.com"],
+        subject: `⚠️ Alerta SOS - ${institucion}`,
+        text: `Mensaje: ${mensaje}\n\nRespuesta AUREA: ${respuesta}\n\nCorreo: ${correo}\nInstitución: ${institucion}\nTema detectado: ${tema}`,
       });
     }
 
-    return res.status(200).json({ respuesta });
+    return new Response(JSON.stringify({
+      respuesta,
+      tema,
+      nuevaCalificacion,
+      certeza,
+      justificación,
+    }), {
+      status: 200,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Content-Type": "application/json",
+      },
+    });
 
-  } catch (error) {
-    console.error("🧨 Error en analizar-respuesta:", error);
-    return res.status(500).json({ error: "Error interno del servidor", detalle: error.message });
+  } catch (err) {
+    console.error("🧨 Error en analizar-respuesta:", err);
+    return new Response(JSON.stringify({ ok: false, error: err.message }), {
+      status: 500,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Content-Type": "application/json",
+      },
+    });
   }
 }
+
