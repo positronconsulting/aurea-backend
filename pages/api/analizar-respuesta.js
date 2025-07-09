@@ -1,12 +1,18 @@
+// archivo: /pages/api/analizar-respuesta.js
+
 import { GoogleSpreadsheet } from "google-spreadsheet";
 import nodemailer from "nodemailer";
 import { OpenAI } from "openai";
+
+const docId = process.env.SHEET_ID;
+const clientEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+const privateKey = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n");
+const logCalificacionesURL = process.env.LOG_CALIFICACIONES_URL;
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// Manejo del preflight CORS
 export async function OPTIONS(req) {
   return new Response(null, {
     status: 204,
@@ -19,16 +25,13 @@ export async function OPTIONS(req) {
 }
 
 export async function POST(req) {
+  const { mensaje, nombre } = await req.json();
+  const correo = req.headers.get("x-session-id") || "desconocido@correo.com";
+  const institucion = req.headers.get("x-institucion") || "Sin Institución";
+  const tipoInstitucion = req.headers.get("x-tipo") || "Social";
+
   try {
-    const { mensaje, historial = [], nombre = "", pregunta1 = "", pregunta2 = "" } = await req.json();
-
-    const correo = req.headers.get("x-session-id") || "desconocido@correo.com";
-    const institucion = req.headers.get("x-institucion") || "Sin Institución";
-    const tipoInstitucion = req.headers.get("x-tipo") || "Social";
-    const fecha = new Date().toISOString();
-
-    // Construir historial de conversación
-    const mensajes = [
+    const historial = [
       {
         role: "system",
         content: `Eres AUREA, un sistema de acompañamiento emocional cálido, humano y sin juicios. Acompañas usando herramientas de la Terapia Cognitivo Conductual, el enfoque neurocognitivo conductual, la Psicología Humanista y la psicoterapia Gestalt.
@@ -41,111 +44,115 @@ Además de acompañar con tus respuestas, analiza el mensaje del usuario usando 
 
 Haz una introspección guiada y natural. Si detectas señales textuales o en contexto de crisis emocional, suicidio, burnout, peligro físico, encierro, acoso, bullying, bulimia, anorexia o trastornos alimenticios, escribe exactamente: "SOS".
 
-Devuelve también el tema detectado (una palabra), el nivel de calificación emocional (de 1 a 10), el nivel de certeza (porcentaje), y si es posible, una justificación. Si el mensaje no es emocional, responde con respeto que solo puedes ayudar en temas de salud emocional.`,
+Devuelve también el tema detectado, el nivel de calificación emocional, el nivel de certeza, y si es posible, una justificación. Si el mensaje no es emocional, responde con respeto que solo puedes ayudar en temas de salud emocional.`,
       },
-      ...historial,
       { role: "user", content: mensaje },
     ];
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o",
-      messages: mensajes,
+      messages: historial,
       temperature: 0.7,
     });
 
     const respuesta = completion.choices[0]?.message?.content || "No tengo respuesta.";
 
-    // Extraer datos de la respuesta
-    const regexTema = /Tema\s*[:：]?\s*(.*)/i;
-    const regexCalif = /Calificación\s*[:：]?\s*(\d+)/i;
-    const regexCerteza = /Certeza\s*[:：]?\s*(\d+)%/i;
-    const regexJust = /Justificación\s*[:：]?\s*(.*)/i;
+    let tema = respuesta.match(/TEMA: (.*)/i)?.[1]?.trim() || "";
+    let calificacion = respuesta.match(/CALIFICACIÓN: (\d+)/i)?.[1] || "";
+    let certeza = respuesta.match(/CERTEZA: (\d+)/i)?.[1] || "";
+    let justificacion = respuesta.match(/JUSTIFICACIÓN: (.*)/i)?.[1]?.trim() || "";
+    let pregunta1 = respuesta.match(/PREGUNTA 1: (.*)/i)?.[1]?.trim() || "";
+    let pregunta2 = respuesta.match(/PREGUNTA 2: (.*)/i)?.[1]?.trim() || "";
 
-    const tema = respuesta.match(regexTema)?.[1]?.trim() || "Sin tema";
-    const nuevaCalificacion = respuesta.match(regexCalif)?.[1] || "";
-    const certeza = respuesta.match(regexCerteza)?.[1] || "";
-    const justificación = respuesta.match(regexJust)?.[1] || "";
     const esSOS = respuesta.includes("SOS");
 
-    // Guardar en logCalificaciones
-    await fetch("https://script.google.com/macros/s/AKfycbyh1QuRv0byLuaEWxxKmPnz_qCwifTHNsGA-I9Kh_9saEAG76MJ06K2wDj_PWQqb0xkdg/exec", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        correo,
-        nombre,
-        institucion,
-        tipoInstitucion,
-        tema,
-        calificacionAnterior: "", // si lo tienes disponible, pásalo desde el frontend
-        nuevaCalificacion,
-        certeza,
-        justificación,
-        pregunta1,
-        pregunta2,
-      }),
-    });
-
-    // Si es SOS, guarda en HistorialSOS y manda correo
-    if (esSOS) {
-      const doc = new GoogleSpreadsheet("1hES4WSal9RLQOX2xAyLM2PKC9WP07Oc48rP5wVjCqAE");
-      await doc.useServiceAccountAuth({
-        client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
-        private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
-      });
+    // Obtener calificación anterior
+    let calificacionAnterior = "";
+    try {
+      const doc = new GoogleSpreadsheet(docId);
+      await doc.useServiceAccountAuth({ client_email: clientEmail, private_key: privateKey });
       await doc.loadInfo();
-      const sheet = doc.sheetsByTitle["HistorialSOS"];
+      const sheet = doc.sheetsByTitle[tipoInstitucion];
+      const rows = await sheet.getRows();
+      const row = rows.find((r) => r.Correo === correo);
+      calificacionAnterior = row ? row[tema] || "" : "";
+    } catch (error) {
+      console.error("Error buscando calificación previa:", error);
+    }
 
-      await sheet.addRow({
-        Timestamp: fecha,
-        Correo: correo,
-        Institución: institucion,
-        Tipo: tipoInstitucion,
-        Tema: tema,
-        Autorizado: "Sí", // por ahora forzado, se puede ajustar si se incluye autoriza
-        Conversación: mensaje,
-        Respuesta: respuesta,
+    // Log de calificaciones
+    try {
+      await fetch(logCalificacionesURL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          correo,
+          nombre,
+          institucion,
+          tipoInstitucion,
+          tema,
+          calificacionAnterior,
+          nuevaCalificacion: calificacion,
+          certeza,
+          justificación,
+          pregunta1,
+          pregunta2,
+        }),
       });
+    } catch (error) {
+      console.error("Error enviando al log:", error);
+    }
 
+    // Envío de correo SOS
+    if (esSOS) {
       const transporter = nodemailer.createTransport({
         service: "gmail",
         auth: {
-          user: process.env.EMAIL_SOS,
-          pass: process.env.EMAIL_PASS,
+          user: process.env.MAIL_SOS,
+          pass: process.env.MAIL_SOS_PASS,
         },
       });
 
       await transporter.sendMail({
-        from: `"AUREA Alertas" <${process.env.EMAIL_SOS}>`,
-        to: ["alfredo@positronconsulting.com"],
-        subject: `⚠️ Alerta SOS - ${institucion}`,
-        text: `Mensaje: ${mensaje}\n\nRespuesta AUREA: ${respuesta}\n\nCorreo: ${correo}\nInstitución: ${institucion}\nTema detectado: ${tema}`,
+        from: `AUREA <${process.env.MAIL_SOS}>`,
+        to: "alfredo@positronconsulting.com",
+        subject: "🚨 Alerta SOS desde AUREA",
+        text: `Mensaje del usuario:\n\n${mensaje}\n\nRespuesta de AUREA:\n\n${respuesta}`,
       });
     }
 
-    return new Response(JSON.stringify({
-      respuesta,
-      tema,
-      nuevaCalificacion,
-      certeza,
-      justificación,
-    }), {
-      status: 200,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Content-Type": "application/json",
-      },
-    });
-
-  } catch (err) {
-    console.error("🧨 Error en analizar-respuesta:", err);
-    return new Response(JSON.stringify({ ok: false, error: err.message }), {
-      status: 500,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Content-Type": "application/json",
-      },
-    });
+    return new Response(
+      JSON.stringify({
+        respuesta,
+        tema,
+        calificacion,
+        certeza,
+        justificacion,
+        pregunta1,
+        pregunta2,
+        sos: esSOS,
+      }),
+      {
+        status: 200,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Content-Type": "application/json",
+        },
+      }
+    );
+  } catch (error) {
+    console.error("🧨 Error general en analizar-respuesta:", error);
+    return new Response(
+      JSON.stringify({ error: error.message }),
+      {
+        status: 500,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Content-Type": "application/json",
+        },
+      }
+    );
   }
 }
+
 
