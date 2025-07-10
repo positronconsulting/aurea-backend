@@ -1,13 +1,18 @@
-import { NextResponse } from "next/server";
+import { Configuration, OpenAIApi } from "openai";
 
-export const config = {
-  runtime: "nodejs"
-};
+const configuration = new Configuration({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+const openai = new OpenAIApi(configuration);
 
 export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Only POST allowed" });
+  }
+
   try {
     const {
-      mensaje = "",
+      mensaje,
       historial = [],
       nombre = "",
       correo = "",
@@ -17,7 +22,7 @@ export default async function handler(req, res) {
       calificaciones = {}
     } = req.body;
 
-    console.log("Data recibida en Analizar del backend:", {
+    console.log("🧠 Data recibida en Analizar del backend:", {
       mensaje,
       historial,
       nombre,
@@ -54,58 +59,28 @@ Datos disponibles:
 ${historial.join("\n")}
 - Último mensaje del usuario: ${mensaje}
 - Calificaciones previas: ${JSON.stringify(calificaciones, null, 2)}
-    
-Después de tu respuesta escribe tres guiones (`---`) en una nueva línea y luego en otra línea:
+
+Después de tu respuesta escribe tres guiones (\`---\`) en una nueva línea y luego en otra línea:
 - SOS → si notas señales claras de crisis emocional.
 - OK → si no hay señales de riesgo.
 `;
 
-    console.log("Para log Analizar:", prompt);
-
-    const openaiKey = process.env.OPENAI_API_KEY;
-
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${openaiKey}`
-      },
-      body: JSON.stringify({
-        model: "gpt-4",
-        messages: [
-          { role: "system", content: "Eres un terapeuta emocional virtual experto." },
-          { role: "user", content: prompt }
-        ],
-        temperature: 0.6
-      })
+    const completion = await openai.createChatCompletion({
+      model: "gpt-4",
+      messages: [
+        { role: "system", content: "Eres un terapeuta experto en contención emocional." },
+        { role: "user", content: prompt }
+      ],
+      temperature: 0.7,
     });
 
-    const result = await response.json();
-    const text = result.choices?.[0]?.message?.content || "No se pudo generar respuesta.";
+    const respuesta = completion.data.choices[0].message.content;
+    console.log("🧠 Para log Analizar:", respuesta);
 
-    const [respuesta, metadataRaw] = text.split("---");
-    const metadata = metadataRaw?.trim();
-    const sos = metadata === "SOS";
+    return res.status(200).json({ respuesta });
 
-    const temaDetectado = temas.find((tema) => respuesta.toLowerCase().includes(tema.toLowerCase())) || "sin_tema";
-    const matchCalificacion = respuesta.match(/(\d{1,3})\s*\/(?:\s*)?100/);
-    const nuevaCalificacion = matchCalificacion ? parseInt(matchCalificacion[1]) : null;
-    const matchCerteza = respuesta.match(/(\d{1,3})\s*%/);
-    const certeza = matchCerteza ? parseInt(matchCerteza[1]) : 0;
-
-    const justificacionMatch = respuesta.match(/justifica(?:ción)?[^:]*[:\-\n]*([^"]{10,300})/i);
-    const justificacion = justificacionMatch ? justificacionMatch[1].trim() : "";
-
-    return res.status(200).json({
-      respuesta: respuesta.trim(),
-      tema: temaDetectado,
-      nuevaCalificacion,
-      certeza,
-      justificacion,
-      sos
-    });
   } catch (error) {
-    console.error("❌ Error en analizar-respuesta:", error);
-    return res.status(500).json({ error: "Fallo en analizar-respuesta", detalles: error.message });
+    console.error("🧨 Error en analizar-respuesta:", error);
+    return res.status(500).json({ error: error.message || "Error interno" });
   }
 }

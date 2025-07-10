@@ -1,11 +1,7 @@
 // pages/api/aurea.js
-import { GoogleGenerativeAI } from "@google/generative-ai";
-
 export const config = {
   runtime: "nodejs",
 };
-
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_SHEETS_API_KEY);
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end("Método no permitido");
@@ -42,16 +38,37 @@ Con base en la información que recibes:
 - Usa preguntas suaves, abiertas y profundas que inviten a la introspección con técnicas de TCC.
 - Si notas que ha habido un patrón (por ejemplo: estrés, ansiedad o tristeza recurrentes), haz una reflexión sobre eso.
 - Limita tu respuesta a un máximo de 1000 caracteres.
-- No uses signos de exclamación. No prometas soluciones. Acompaña.`;
+- No uses signos de exclamación. No prometas soluciones. Acompaña.
 
-    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-    const result = await model.generateContent(prompt);
-    const response = await result.response;
-    const text = response.text();
+Historial reciente:
+${historial.join("\n")}
 
-    console.log("Para log Aurea:", text);
+Último mensaje del usuario:
+${mensaje}
+`.trim();
 
-    res.status(200).json({ respuesta: text });
+    const apiKey = process.env.OPENAI_API_KEY;
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.7,
+        max_tokens: 1000,
+      }),
+    });
+
+    const data = await response.json();
+    const texto = data?.choices?.[0]?.message?.content || "Sin respuesta generada";
+
+    console.log("Para log Aurea:", texto);
+    res.status(200).json({ respuesta: texto });
+
   } catch (error) {
     console.error("❌ Error en aurea:", error);
     res.status(500).json({ error: "Fallo en el acompañamiento emocional" });
