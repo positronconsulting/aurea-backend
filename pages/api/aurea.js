@@ -1,10 +1,11 @@
-// pages/api/aurea.js
 export const config = {
   runtime: "nodejs",
 };
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).end("Método no permitido");
+  if (req.method !== "POST") {
+    return res.status(405).json({ ok: false, error: "Método no permitido" });
+  }
 
   try {
     const {
@@ -25,29 +26,21 @@ export default async function handler(req, res) {
       calificacionMasAlta
     });
 
+    if (!mensaje) {
+      console.warn("⚠️ No se recibió mensaje");
+      return res.status(400).json({ ok: false, error: "Mensaje vacío" });
+    }
+
     const prompt = `
-Eres AUREA, un sistema de acompañamiento emocional cálido, humano y sin juicios. Tu función es acompañar a las personas en sus procesos emocionales con presencia y empatía. Utilizas herramientas de la Terapia Cognitivo Conductual (TCC), la Psicología Humanista y la psicoterapia Gestalt.
-
-Tu tono es cercano, compasivo, reflexivo y claro. No diagnosticas, no etiquetas, no recetas. Acompañas desde el respeto y la validación emocional. Si te preguntan algo fuera de tus funciones simplemente responde de forma respetuosa que no es un tema que puedas desarrollar.
-
-Con base en la información que recibes:
-- Reconoce el tema emocional principal: ${tema}
-- Si la persona tiene una calificación emocional alta (${calificacionMasAlta}/100), tenlo en cuenta para acompañar con más delicadeza.
-- Apóyate en el historial para dar seguimiento al proceso.
-- Dirígete a la persona por su nombre ("${nombre}"), pero no lo repitas en cada frase.
-- Usa preguntas suaves, abiertas y profundas que inviten a la introspección con técnicas de TCC.
-- Si notas que ha habido un patrón (por ejemplo: estrés, ansiedad o tristeza recurrentes), haz una reflexión sobre eso.
-- Limita tu respuesta a un máximo de 1000 caracteres.
-- No uses signos de exclamación. No prometas soluciones. Acompaña.
-
-Historial reciente:
-${historial.join("\n")}
-
-Último mensaje del usuario:
-${mensaje}
+AUREA recibe el siguiente mensaje para prueba:
+"${mensaje}"
 `.trim();
 
     const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      console.error("❌ No hay API Key de OpenAI en el entorno");
+      return res.status(500).json({ ok: false, error: "Falta API Key" });
+    }
 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -63,14 +56,22 @@ ${mensaje}
       }),
     });
 
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("❌ Error de OpenAI:", errorText);
+      return res.status(500).json({ ok: false, error: "Error al llamar a OpenAI", detalle: errorText });
+    }
+
     const data = await response.json();
     const texto = data?.choices?.[0]?.message?.content || "Sin respuesta generada";
 
-    console.log("Para log Aurea:", texto);
-    res.status(200).json({ respuesta: texto });
+    console.log("✅ Respuesta de OpenAI:", texto);
+
+    return res.status(200).json({ ok: true, respuesta: texto });
 
   } catch (error) {
-    console.error("❌ Error en aurea:", error);
-    res.status(500).json({ error: "Fallo en el acompañamiento emocional" });
+    console.error("🔥 Error en aurea.js:", error);
+    return res.status(500).json({ ok: false, error: "Error interno en el servidor" });
   }
 }
+
