@@ -43,26 +43,26 @@ Con base en las siguientes escalas psicológicas estandarizadas (PHQ-9, GAD-7, C
 1. Determina cuál de los siguientes temas es el más relevante en el mensaje de la persona:
 ${temas.join(", ")}
 
-2. Asigna una calificación emocional del 1 al 100 al tema elegido (100 es el nivel más alto de gravedad emocional), con base en los instrumentos mencionados.
+2. Asigna una calificación emocional del 1 al 100 al tema elegido.
 
-3. Estima el porcentaje de certeza (del 1 al 100) de que esa calificación corresponde correctamente al tema detectado.
+3. Estima el porcentaje de certeza (1 a 100).
 
 4. Justifica tu decisión clínica en máximo 3 líneas.
 
-5. Si el nivel de certeza es menor a 90, haz una nueva pregunta para obtener más información emocional sobre ese tema.
+5. Si la certeza es menor a 90, haz una nueva pregunta para obtener más información.
 
-6. Limita tu respuesta a menos de 1000 caracteres. No uses emojis ni signos de exclamación.
+6. Máximo 1000 caracteres. Sin emojis ni exclamaciones.
 
-Datos disponibles:
+Datos:
 - Nombre: ${nombre}
-- Historial reciente:
-${historial.join("\n")}
-- Último mensaje del usuario: ${mensaje}
+- Historial: ${historial.join("\n")}
+- Último mensaje: ${mensaje}
 - Calificaciones previas: ${JSON.stringify(calificaciones, null, 2)}
 
-Después de tu respuesta escribe tres guiones (\`---\`) en una nueva línea y luego en otra línea:
-- SOS → si notas señales claras de crisis emocional.
-- OK → si no hay señales de riesgo.
+Después de tu respuesta escribe:
+---
+- SOS → si hay crisis
+- OK → si no hay señales de riesgo
 `;
 
     const completion = await openai.createChatCompletion({
