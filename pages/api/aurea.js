@@ -1,60 +1,48 @@
-export const config = {
-  runtime: 'edge',
-};
+// /api/aurea.js en Vercel (Node.js 18+)
 
-export default async function handler(req) {
-  if (req.method === 'OPTIONS') {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        'Access-Control-Allow-Origin': 'https://www.positronconsulting.com',
-        'Access-Control-Allow-Methods': 'POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-      },
-    });
+export default async function handler(req, res) {
+  // 🔐 Encabezados para evitar CORS
+  res.setHeader("Access-Control-Allow-Origin", "https://www.positronconsulting.com");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    return res.status(200).end(); // Preflight CORS
   }
 
-  if (req.method !== 'POST') {
-    return new Response(JSON.stringify({
-      ok: false,
-      error: 'Método no permitido'
-    }), {
-      status: 405,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': 'https://www.positronconsulting.com',
-      }
-    });
+  if (req.method !== "POST") {
+    return res.status(405).json({ ok: false, error: "Método no permitido" });
   }
 
   try {
-    const body = await req.json();
-    const mensaje = body?.mensaje || "";
+    const {
+      mensaje,
+      correo,
+      tipoInstitucion,
+      nombre,
+      institucion,
+      temas,
+      calificaciones
+    } = req.body;
 
-    console.log("📥 Recibido en AUREA.js:", mensaje);
+    console.log("📥 Data recibida en Aurea del backend:", {
+      mensaje,
+      correo,
+      tipoInstitucion,
+      nombre,
+      institucion,
+      temas,
+      calificaciones
+    });
 
-    return new Response(JSON.stringify({
+    // 🧪 Solo responder para confirmar recepción
+    return res.status(200).json({
       ok: true,
       respuesta: `Sí lo recibí: ${mensaje}`
-    }), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': 'https://www.positronconsulting.com',
-      }
     });
 
   } catch (error) {
-    console.error("🔥 Error en parsing JSON:", error.message);
-    return new Response(JSON.stringify({
-      ok: false,
-      error: 'Error procesando JSON en el servidor'
-    }), {
-      status: 500,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': 'https://www.positronconsulting.com',
-      }
-    });
+    console.error("🔥 Error en aurea.js:", error);
+    return res.status(500).json({ ok: false, error: "Fallo interno en aurea.js" });
   }
 }
