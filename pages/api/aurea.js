@@ -1,12 +1,14 @@
 // pages/api/aurea.js
 
+import { v4 as uuidv4 } from 'uuid';
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "https://www.positronconsulting.com");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") {
-    return res.status(200).end(); // Preflight
+    return res.status(200).end();
   }
 
   if (req.method !== "POST") {
@@ -24,7 +26,7 @@ export default async function handler(req, res) {
       institucion
     });
 
-    // 🔐 OpenAI API
+    const sessionID = uuidv4();
     const apiKey = process.env.OPENAI_API_KEY;
 
     const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -58,8 +60,27 @@ export default async function handler(req, res) {
     }
 
     const respuestaAurea = data.choices[0].message.content.trim();
+    const usage = data.usage || {};
+    const costoUSD = usage.total_tokens ? usage.total_tokens * 0.00001 : 0;
 
-    console.log("🧠 Respuesta de AUREA:", respuestaAurea);
+    // Registro en Google Sheets
+    const sheetPayload = {
+      sessionID,
+      usuario: correo,
+      institucion,
+      inputTokens: usage.prompt_tokens || 0,
+      outputTokens: usage.completion_tokens || 0,
+      totalTokens: usage.total_tokens || 0,
+      costoUSD: parseFloat(costoUSD.toFixed(6))
+    };
+
+    await fetch("https://script.google.com/macros/s/AKfycbwA3XgsycDzaMJpUn-r9R0IRJdsSbmviY_lwN96w1b-lEwghaydhkDAkZaZUn5cQ3s3mQ/exec", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(sheetPayload)
+    });
+
+    console.log("📊 Tokens registrados:", sheetPayload);
 
     return res.status(200).json({
       ok: true,
