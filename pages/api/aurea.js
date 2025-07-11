@@ -1,14 +1,12 @@
 // pages/api/aurea.js
 
-import { v4 as uuidv4 } from 'uuid';
-
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "https://www.positronconsulting.com");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (req.method === "OPTIONS") {
-    return res.status(200).end();
+    return res.status(200).end(); // Preflight
   }
 
   if (req.method !== "POST") {
@@ -26,7 +24,6 @@ export default async function handler(req, res) {
       institucion
     });
 
-    const sessionID = uuidv4();
     const apiKey = process.env.OPENAI_API_KEY;
 
     const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -63,9 +60,9 @@ export default async function handler(req, res) {
     const usage = data.usage || {};
     const costoUSD = usage.total_tokens ? usage.total_tokens * 0.00001 : 0;
 
-    // Registro en Google Sheets
+    // 📊 Enviar registro a Google Sheets
     const sheetPayload = {
-      sessionID,
+      fecha: new Date().toISOString(),
       usuario: correo,
       institucion,
       inputTokens: usage.prompt_tokens || 0,
@@ -92,3 +89,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ ok: false, error: "Error interno en aurea.js" });
   }
 }
+
