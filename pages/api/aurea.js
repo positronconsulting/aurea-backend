@@ -8,6 +8,6 @@ export default async function handler(req, res) {
 
   try {
 	const {mensaje} = req.body;
-	console.log{"Recibí el mensaje: ", {mensaje});
   }
+  console.log{"Recibí el mensaje: ", {mensaje});
 }
