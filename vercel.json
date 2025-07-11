@@ -1,7 +1,0 @@
-{
-  "functions": {
-    "api/aurea.js": {
-      "runtime": "nodejs18.x"
-    }
-  }
-}
