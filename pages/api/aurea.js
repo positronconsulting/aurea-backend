@@ -26,14 +26,14 @@ export default async function handler(req, res) {
       porcentaje
     } = req.body;
 
-    const historial = []; // <-- esto se expandirá después
+    const historial = [];
 
     const prompt = `
-Eres AUREA, un sistema de acompañamiento emocional cálido y sin juicios...
+Eres AUREA, un sistema de acompañamiento emocional cálido y sin juicios.
 
 ${nombre} mandó este mensaje: ${mensaje}, y este es el historial de la conversación: ${JSON.stringify(historial)}.
 
-Responde en JSON como se muestra abajo:
+Responde en JSON como:
 {
   "mensajeUsuario": "Aquí va la respuesta de AUREA",
   "temaDetectado": "tema que hayas detectado",
@@ -41,7 +41,7 @@ Responde en JSON como se muestra abajo:
   "porcentaje": "porcentaje de certeza del 1 al 100",
   "SOS": "SOS o OK"
 }
-    `.trim();
+`.trim();
 
     const completion = await openai.createChatCompletion({
       model: "gpt-4",
@@ -49,11 +49,11 @@ Responde en JSON como se muestra abajo:
       temperature: 0.7
     });
 
-    const raw = completion.data.choices[0]?.message?.content || "";
+    console.log("🧠 COMPLETION DATA:", JSON.stringify(completion.data, null, 2));
 
-    console.log("📩 RESPUESTA RAW:", raw);
+    // Devolvemos TODO como texto plano para diagnosticar
+    return res.status(200).send(JSON.stringify(completion.data, null, 2));
 
-    return res.status(200).send(raw); // 👉 SIN .json(), devolvemos texto plano
   } catch (err) {
     console.error("🔥 Error general en aurea.js:", err);
     return res.status(500).send("🔥 Error en el servidor.");
