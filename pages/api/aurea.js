@@ -86,9 +86,14 @@ Responde en formato JSON:
     console.log("✅ JSON interpretado:", json);
 
     return res.status(200).json({
-      ok: true,
-      respuesta: json.mensajeUsuario || "🤖 Respuesta vacía."
-    });
+  ok: true,
+  mensajeUsuario: json.mensajeUsuario || "🤖 Respuesta vacía.",
+  temaDetectado: json.temaDetectado || "",
+  calificacion: json.calificacion || "",
+  porcentaje: json.porcentaje || "",
+  SOS: json.SOS || "OK"
+});
+
 
   } catch (err) {
     console.error("🔥 Error en aurea.js:", err);
