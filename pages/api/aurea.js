@@ -26,7 +26,7 @@ export default async function handler(req, res) {
       porcentaje
     } = req.body;
 
-    const historial = [];
+    const historial = []; // <-- esto se expandirá después
 
     const prompt = `
 Eres AUREA, un sistema de acompañamiento emocional cálido y sin juicios...
@@ -53,18 +53,12 @@ Responde en JSON como se muestra abajo:
 
     console.log("📩 RESPUESTA RAW:", raw);
 
-    return res.status(200).json({
-      ok: true,
-      respuesta: raw
-    });
-
+    return res.status(200).send(raw); // 👉 SIN .json(), devolvemos texto plano
   } catch (err) {
     console.error("🔥 Error general en aurea.js:", err);
-    return res.status(500).json({
-      ok: false,
-      respuesta: "🔥 Error en el servidor."
-    });
+    return res.status(500).send("🔥 Error en el servidor.");
   }
 }
+
 
 
