@@ -71,7 +71,7 @@ export default async function handler(req, res) {
       costoUSD: parseFloat(costoUSD.toFixed(6))
     };
 
-    await fetch("https://script.google.com/macros/s/AKfycbwA3XgsycDzaMJpUn-r9R0IRJdsSbmviY_lwN96w1b-lEwghaydhkDAkZaZUn5cQ3s3mQ/exec", {
+    await fetch("https://script.google.com/macros/s/AKfycbyHn1qrFocq0pkjujypoB-vK7MGmGFz6vH4t2qVfHcziTcuMB3abi3UegPGdNno3ibULA/exec", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(sheetPayload)
