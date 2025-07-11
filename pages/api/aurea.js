@@ -1,25 +1,13 @@
-module.exports = async (req, res) => {
+export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "https://www.positronconsulting.com");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Método no permitido" });
+
   try {
-    if (req.method !== "POST") {
-      res.setHeader("Content-Type", "application/json");
-      return res.status(405).end(JSON.stringify({ ok: false, error: "Método no permitido" }));
-    }
-
-    const { mensaje } = req.body;
-
-    console.log("📥 Data recibida:", mensaje);
-
-    const respuesta = {
-      ok: true,
-      respuesta: `Sí lo recibí: ${mensaje || "(mensaje vacío)"}`
-    };
-
-    res.setHeader("Content-Type", "application/json");
-    res.status(200).end(JSON.stringify(respuesta));
-
-  } catch (err) {
-    console.error("🔥 Error en aurea.js:", err);
-    res.setHeader("Content-Type", "application/json");
-    res.status(500).end(JSON.stringify({ ok: false, error: "Fallo interno" }));
+	const {mensaje} = req.body;
+	console.log{"Recibí el mensaje: ", {mensaje});
   }
-};
+}
