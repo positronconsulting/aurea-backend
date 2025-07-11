@@ -26,14 +26,14 @@ export default async function handler(req, res) {
       porcentaje
     } = req.body;
 
-    const historial = []; // Pendiente conectar
+    const historial = [];
 
     const prompt = `
 Eres AUREA, un sistema de acompañamiento emocional cálido y sin juicios...
 
 ${nombre} mandó este mensaje: ${mensaje}, y este es el historial de la conversación: ${JSON.stringify(historial)}.
 
-Usa este formato JSON:
+Responde en JSON como se muestra abajo:
 {
   "mensajeUsuario": "Aquí va la respuesta de AUREA",
   "temaDetectado": "tema que hayas detectado",
@@ -41,57 +41,28 @@ Usa este formato JSON:
   "porcentaje": "porcentaje de certeza del 1 al 100",
   "SOS": "SOS o OK"
 }
-`.trim();
-
-    console.log("📤 PROMPT enviado a OpenAI:", prompt);
+    `.trim();
 
     const completion = await openai.createChatCompletion({
       model: "gpt-4",
       messages: [{ role: "user", content: prompt }],
-      temperature: 0.7,
+      temperature: 0.7
     });
 
     const raw = completion.data.choices[0]?.message?.content || "";
-    console.log("📩 RESPUESTA raw:", raw);
 
-    if (!raw) {
-      console.warn("⚠️ OpenAI devolvió respuesta vacía");
-      return res.status(200).json({
-        ok: false,
-        mensajeUsuario: "⚠️ No se recibió respuesta válida de OpenAI.",
-        temaDetectado: "",
-        calificacion: "",
-        porcentaje: "",
-        SOS: "OK"
-      });
-    }
+    console.log("📩 RESPUESTA RAW:", raw);
 
-    let respuestaParseada = {};
-    try {
-      respuestaParseada = JSON.parse(raw);
-    } catch (error) {
-      console.error("❌ Error al parsear JSON de la IA:", error);
-      return res.status(200).json({
-        ok: false,
-        mensajeUsuario: raw,
-        temaDetectado: "",
-        calificacion: "",
-        porcentaje: "",
-        SOS: "OK"
-      });
-    }
-
-    return res.status(200).json({ ok: true, ...respuestaParseada });
+    return res.status(200).json({
+      ok: true,
+      respuesta: raw
+    });
 
   } catch (err) {
     console.error("🔥 Error general en aurea.js:", err);
     return res.status(500).json({
       ok: false,
-      mensajeUsuario: "🔥 Error en el servidor.",
-      temaDetectado: "",
-      calificacion: "",
-      porcentaje: "",
-      SOS: "OK"
+      respuesta: "🔥 Error en el servidor."
     });
   }
 }
