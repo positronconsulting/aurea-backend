@@ -1,92 +1,82 @@
-// pages/api/aurea.js
+import { NextResponse } from 'next/server';
+import { Configuration, OpenAIApi } from 'openai';
 
-export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "https://www.positronconsulting.com");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+const configuration = new Configuration({
+  apiKey: process.env.OPENAI_API_KEY
+});
+const openai = new OpenAIApi(configuration);
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end(); // Preflight
-  }
-
-  if (req.method !== "POST") {
-    return res.status(405).json({ ok: false, error: "Método no permitido" });
-  }
-
+export async function POST(req) {
   try {
-    const { mensaje, correo, tipoInstitucion, nombre, institucion } = req.body;
-
-    console.log("📥 Data recibida en Aurea del backend:", {
+    const body = await req.json();
+    const {
       mensaje,
       correo,
       tipoInstitucion,
       nombre,
-      institucion
-    });
-
-    const apiKey = process.env.OPENAI_API_KEY;
-
-    const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: "gpt-4",
-        messages: [
-          {
-            role: "system",
-            content: "Eres AUREA, una inteligencia artificial especializada en acompañamiento emocional. Responde de forma breve, cálida y empática."
-          },
-          {
-            role: "user",
-            content: mensaje
-          }
-        ],
-        temperature: 0.7,
-        max_tokens: 200
-      })
-    });
-
-    const data = await openAiResponse.json();
-
-    if (!data.choices || !data.choices[0]?.message?.content) {
-      console.error("⚠️ Error en respuesta de OpenAI:", data);
-      return res.status(500).json({ ok: false, error: "Error al procesar respuesta de AUREA" });
-    }
-
-    const respuestaAurea = data.choices[0].message.content.trim();
-    const usage = data.usage || {};
-    const costoUSD = usage.total_tokens ? usage.total_tokens * 0.00001 : 0;
-
-    // 📊 Enviar registro a Google Sheets
-    const sheetPayload = {
-      fecha: new Date().toISOString(),
-      usuario: correo,
       institucion,
-      inputTokens: usage.prompt_tokens || 0,
-      outputTokens: usage.completion_tokens || 0,
-      totalTokens: usage.total_tokens || 0,
-      costoUSD: parseFloat(costoUSD.toFixed(6))
-    };
+      tema = "",
+      calificacion = 0,
+      porcentaje = 0,
+      historial = []
+    } = body;
 
-    await fetch("https://script.google.com/macros/s/AKfycbyHn1qrFocq0pkjujypoB-vK7MGmGFz6vH4t2qVfHcziTcuMB3abi3UegPGdNno3ibULA/exec", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(sheetPayload)
+    console.log("📥 Data recibida en Aurea del backend:", {
+      mensaje,
+      historial,
+      nombre,
+      institucion,
+      tema,
+      calificacion,
+      porcentaje
     });
 
-    console.log("📊 Tokens registrados:", sheetPayload);
+    const prompt = `
+Eres AUREA, un sistema de acompañamiento emocional cálido y sin juicios. Acompañas usando herramientas de la terapia cognitivo conductual, el enfoque neurocognitivo conductual y la psicoterapia Gestalt. Tu estilo es cercano, claro y humano a pesar de ser solo un acompañante, no un psicólogo certificado.
 
-    return res.status(200).json({
-      ok: true,
-      respuesta: respuestaAurea
+Tu objetivo es ayudar a las personas a explorar lo que sienten, identificar emociones y reflexionar sobre su bienestar. No das diagnósticos ni consejos médicos.
+
+Responde solo sobre temas de salud emocional. Si el usuario pide algo fuera de tu rol, indícalo con respeto.
+
+[Nombre] mandó este mensaje: "${mensaje}", y este es el historial de la conversación: ${historial.map(m => `"${m}"`).join(",\n")}
+
+Analiza las palabras textuales y el contexto, como si fueras el mejor psicólogo del mundo, basándote en el DSM-5, protocolos de Terapia Cognitivo Conductual y relaciónalo con un tema de estos: [${tipoInstitucion}]. Si no encuentras una relación directa, hazlo por análisis clínico al que más se acerque o al que podría relacionarse si tuvieras más información.
+
+Utiliza el historial, las calificaciones anteriores (${calificacion}), tema previo (${tema}), porcentaje de certeza previo (${porcentaje}) y los reactivos de tests psicológicos como PHQ-9, GAD-7, C-SSRS, ASSIST, AUDIT, IAT, Rosenberg, PSS, PSQI, Escala de soledad UCLA, SCL-90-R, BAI o BDI-II para asignar una nueva calificación al tema que seleccionaste y un nuevo porcentaje de certeza.
+
+Si el porcentaje de certeza es mayor a 90%, ofrécele un mensaje de acompañamiento. Si es menor, incluye alguna pregunta que te ayude a llegar al 100% de certeza.
+
+IMPORTANTÍSIMO: Siempre que detectes señales o palabras literales de crisis emocional, suicidio, burnout, peligro, peligro físico, encierro, acoso, bullying, bulimia, anorexia, violación, ludopatía o trastornos alimenticios, escribe exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK".
+
+Responde solo en formato JSON con estos campos:
+{
+  "mensajeUsuario": "respuesta que se muestra al usuario (menos de 1000 caracteres)",
+  "temaDetectado": "tema elegido",
+  "calificacion": "valor numérico",
+  "porcentaje": "valor numérico",
+  "SOS": "SOS o OK"
+}`;
+
+    const completion = await openai.createChatCompletion({
+      model: "gpt-4",
+      messages: [
+        { role: "system", content: "Eres un asistente emocional." },
+        { role: "user", content: prompt }
+      ],
+      temperature: 0.6,
+      max_tokens: 500
     });
 
-  } catch (err) {
-    console.error("🔥 Error en aurea.js:", err);
-    return res.status(500).json({ ok: false, error: "Error interno en aurea.js" });
+    const textoRespuesta = completion.data.choices[0].message.content;
+
+    console.log("📤 Respuesta bruta de OpenAI:", textoRespuesta);
+
+    const json = JSON.parse(textoRespuesta);
+    return NextResponse.json(json);
+
+  } catch (error) {
+    console.error("🔥 Error en aurea.js:", error);
+    return NextResponse.json({ ok: false, error: error.message });
   }
 }
 
