@@ -1,20 +1,25 @@
 module.exports = async (req, res) => {
-  if (req.method !== "POST") {
-    return res.status(405).json({ ok: false, error: "Método no permitido" });
-  }
-
   try {
+    if (req.method !== "POST") {
+      res.setHeader("Content-Type", "application/json");
+      return res.status(405).end(JSON.stringify({ ok: false, error: "Método no permitido" }));
+    }
+
     const { mensaje } = req.body;
 
     console.log("📥 Data recibida:", mensaje);
 
-    return res.status(200).json({
+    const respuesta = {
       ok: true,
-      respuesta: `Sí lo recibí: ${mensaje}`
-    });
+      respuesta: `Sí lo recibí: ${mensaje || "(mensaje vacío)"}`
+    };
+
+    res.setHeader("Content-Type", "application/json");
+    res.status(200).end(JSON.stringify(respuesta));
 
   } catch (err) {
-    console.error("🔥 Error:", err);
-    return res.status(500).json({ ok: false, error: "Fallo interno" });
+    console.error("🔥 Error en aurea.js:", err);
+    res.setHeader("Content-Type", "application/json");
+    res.status(500).end(JSON.stringify({ ok: false, error: "Fallo interno" }));
   }
 };
