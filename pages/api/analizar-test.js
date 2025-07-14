@@ -92,7 +92,24 @@ Comentario libre:
     });
 
     const data = await openAiResponse.json();
-    console.log("📩 Respuesta de OpenAI:", data);
+    console.log("📩 Respuesta de OpenAI cruda:", data);
+
+    const usage = data.usage || {};
+    const costoUSD = usage.total_tokens ? usage.total_tokens * 0.00001 : 0;
+
+    await fetch("https://script.google.com/macros/s/AKfycbyHn1qrFocq0pkjujypoB-vK7MGmGFz6vH4t2qVfHcziTcuMB3abi3UegPGdNno3ibULA/exec", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fecha: new Date().toISOString(),
+        usuario: correo,
+        institucion,
+        inputTokens: usage.prompt_tokens || 0,
+        outputTokens: usage.completion_tokens || 0,
+        totalTokens: usage.total_tokens || 0,
+        costoUSD: parseFloat(costoUSD.toFixed(6))
+      })
+    });
 
     if (!data.choices || !data.choices[0]?.message?.content) {
       return res.status(500).json({ ok: false, error: "Respuesta vacía de OpenAI" });
@@ -101,6 +118,7 @@ Comentario libre:
     let resultado;
     try {
       resultado = JSON.parse(data.choices[0].message.content);
+      console.log("✅ JSON interpretado:", resultado);
     } catch (err) {
       console.error("❌ Error al parsear JSON:", err);
       return res.status(500).json({ ok: false, error: "Formato inválido" });
@@ -112,4 +130,3 @@ Comentario libre:
     return res.status(500).json({ ok: false, error: "Error interno" });
   }
 }
-
