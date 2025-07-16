@@ -32,7 +32,7 @@ Además, el usuario escribió un comentario libre al final.
 
 Tu tarea es:
 
-1. **Analizar clínicamente las respuestas** según criterios de escalas estandarizadas como:
+1. Analizar clínicamente las respuestas según criterios de escalas estandarizadas como:
    - PHQ-9 (depresión)
    - GAD-7 (ansiedad)
    - C-SSRS y Escala de desesperanza de Beck (suicidio)
@@ -46,16 +46,13 @@ Tu tarea es:
    - Escala de soledad UCLA
    - Y-BOCS (TOC)
 
-2. **Asignar una calificación emocional del 1 al 100** para cada tema detectado en las respuestas. Solo califica los temas que estén claramente reflejados en las respuestas. Si no hay información suficiente sobre un tema, **no lo incluyas**.
+2. SIEMPRE Asignar una calificación emocional del 1 al 100 para cada tema que te mandé arriba.
 
-3. **Redactar un perfil emocional breve** (2 a 4 frases), con un lenguaje empático, humano y profesional, que resuma el estado emocional de la persona basado en su test. Usa un tono comprensivo, sin juicios ni tecnicismos innecesarios.
+3. Redactar un perfil emocional con un lenguaje empático, humano y profesional, que resuma el estado emocional de la persona basado en su test. Usa un tono comprensivo, sin juicios ni tecnicismos innecesarios.
 
-4. **Detectar señales de alto riesgo**. Si identificas indicadores claros de suicidio, psicosis, violencia severa o abuso (familiar, sexual, etc.), responde exactamente:  
-   "SOS"  
-   En cualquier otro caso responde simplemente:  
-   "OK"
+4. IMPORTANTÍSIMO: Siempre que detectes señales o palabras literales de crisis emocional, suicidio, burnout, peligro, peligro físico, encierro, acoso, bullying, bulimia, anorexia, violación, ludopatía o trastornos alimenticios, escribe exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK".
 
-**Instrucciones estrictas:**
+Instrucciones estrictas:
 - Devuelve la información como un JSON con exactamente esta estructura:
 
 {
@@ -124,7 +121,13 @@ Comentario libre:
       return res.status(500).json({ ok: false, error: "Formato inválido" });
     }
 
-    return res.status(200).json({ ok: true, ...resultado });
+    return res.status(200).json({
+      ok: true,
+      SOS: resultado.SOS || "OK",
+      calificaciones: resultado.calificaciones || {},
+      perfil: resultado.perfil || ""
+    });
+
   } catch (err) {
     console.error("🔥 Error en analizar-test:", err);
     return res.status(500).json({ ok: false, error: "Error interno" });
