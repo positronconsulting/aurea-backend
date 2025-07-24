@@ -8,43 +8,46 @@ export default async function handler(req, res) {
 
   try {
     const { codigo, email, yaRegistrado, intencionRegistro } = req.body;
-
-    console.log("📥 Datos recibidos en verificar-codigo:", {
-      codigo,
-      email,
-      yaRegistrado,
-      intencionRegistro
-    });
+    console.log("📥 Datos recibidos:", { codigo, email, yaRegistrado, intencionRegistro });
 
     if (!codigo || !email) {
-      console.warn("❌ Faltan parámetros obligatorios:", { codigo, email });
+      console.warn("❌ Faltan parámetros:", { codigo, email });
       return res.status(400).json({ error: "Faltan parámetros" });
     }
 
     const endpointAppsScript = "https://script.google.com/macros/s/AKfycbwdYtbQr_ipAomMRoPaxPdVy2fXbvLcaTw0uyXrZGrypcHVU3OEVEJA6m9W55_AvYsnTA/exec";
     console.log("📡 Llamando al Apps Script:", endpointAppsScript);
 
+    const fetchBody = {
+      codigo,
+      email,
+      yaRegistrado,
+      intencionRegistro
+    };
+    console.log("📦 Payload enviado:", fetchBody);
+
     const respuesta = await fetch(endpointAppsScript, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ codigo, email, yaRegistrado, intencionRegistro })
+      body: JSON.stringify(fetchBody)
     });
 
     console.log("📬 Status respuesta:", respuesta.status, respuesta.statusText);
 
     const textoPlano = await respuesta.text();
-    console.log("📨 Texto recibido:", textoPlano);
+    console.log("📨 Texto recibido (plano):", textoPlano);
 
     let resultado;
     try {
       resultado = JSON.parse(textoPlano);
-    } catch (e) {
-      console.error("❌ No se pudo parsear JSON:", e.message);
+      console.log("✅ JSON parseado:", resultado);
+    } catch (errParse) {
+      console.error("❌ No se pudo parsear el JSON:", errParse.message);
       return res.status(500).json({ error: "Respuesta no válida del verificador" });
     }
 
     if (!resultado || typeof resultado !== "object") {
-      console.error("❌ Respuesta vacía o malformada:", resultado);
+      console.error("❌ Resultado malformado:", resultado);
       return res.status(500).json({ error: "Respuesta inválida del verificador" });
     }
 
@@ -56,9 +59,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // ✅ Si todo salió bien, responde al frontend
-    console.log("✅ Acceso permitido. Enviando respuesta final:", resultado);
-
+    console.log("✅ Respuesta final enviada:", resultado);
     return res.json({
       acceso: true,
       institucion: resultado.institucion || "sin nombre",
@@ -67,8 +68,7 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
-    console.error("🔥 Error en verificar-codigo:", error.message);
+    console.error("🔥 Error en verificar-codigo general:", error);
     return res.status(500).json({ error: "Error interno del servidor" });
   }
 }
-
