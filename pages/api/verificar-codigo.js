@@ -9,16 +9,20 @@ export default async function handler(req, res) {
   try {
     const { codigo, email, yaRegistrado, intencionRegistro } = req.body;
 
-    console.log("📥 Datos recibidos:", { codigo, email, yaRegistrado, intencionRegistro });
+    console.log("📥 Datos recibidos en verificar-codigo:", {
+      codigo,
+      email,
+      yaRegistrado,
+      intencionRegistro
+    });
 
     if (!codigo || !email) {
-      console.log("❌ Faltan parámetros:", { codigo, email });
+      console.warn("❌ Faltan parámetros obligatorios:", { codigo, email });
       return res.status(400).json({ error: "Faltan parámetros" });
     }
 
     const endpointAppsScript = "https://script.google.com/macros/s/AKfycbwdYtbQr_ipAomMRoPaxPdVy2fXbvLcaTw0uyXrZGrypcHVU3OEVEJA6m9W55_AvYsnTA/exec";
-
-    console.log("📡 Llamando al nuevo endpoint Apps Script:", endpointAppsScript);
+    console.log("📡 Llamando al Apps Script:", endpointAppsScript);
 
     const respuesta = await fetch(endpointAppsScript, {
       method: "POST",
@@ -26,23 +30,34 @@ export default async function handler(req, res) {
       body: JSON.stringify({ codigo, email, yaRegistrado, intencionRegistro })
     });
 
-    console.log("📬 Respuesta recibida:", respuesta.status, respuesta.statusText);
+    console.log("📬 Status respuesta:", respuesta.status, respuesta.statusText);
 
-    if (!respuesta.ok) {
-      const errorText = await respuesta.text();
-      console.error("❌ Error al conectar con Google Apps Script:", errorText);
-      throw new Error("Error al conectar con el verificador");
+    const textoPlano = await respuesta.text();
+    console.log("📨 Texto recibido:", textoPlano);
+
+    let resultado;
+    try {
+      resultado = JSON.parse(textoPlano);
+    } catch (e) {
+      console.error("❌ No se pudo parsear JSON:", e.message);
+      return res.status(500).json({ error: "Respuesta no válida del verificador" });
     }
 
-    const resultado = await respuesta.json();
-    console.log("🔐 Resultado desde Apps Script:", resultado);
+    if (!resultado || typeof resultado !== "object") {
+      console.error("❌ Respuesta vacía o malformada:", resultado);
+      return res.status(500).json({ error: "Respuesta inválida del verificador" });
+    }
 
     if (!resultado.acceso) {
+      console.warn("🛑 Acceso denegado:", resultado.motivo || "sin motivo");
       return res.json({
         acceso: false,
         motivo: resultado.motivo || "Código inválido o sin acceso"
       });
     }
+
+    // ✅ Si todo salió bien, responde al frontend
+    console.log("✅ Acceso permitido. Enviando respuesta final:", resultado);
 
     return res.json({
       acceso: true,
@@ -52,7 +67,8 @@ export default async function handler(req, res) {
     });
 
   } catch (error) {
-    console.error("🧨 Error en verificar-codigo:", error.message);
+    console.error("🔥 Error en verificar-codigo:", error.message);
     return res.status(500).json({ error: "Error interno del servidor" });
   }
 }
+
