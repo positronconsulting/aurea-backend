@@ -7,23 +7,23 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Método no permitido" });
 
   try {
-    const { codigo, email, yaRegistrado } = req.body;
+    const { codigo, email, yaRegistrado, intencionRegistro } = req.body;
 
-    console.log("📥 Datos recibidos:", { codigo, email, yaRegistrado });
+    console.log("📥 Datos recibidos:", { codigo, email, yaRegistrado, intencionRegistro });
 
     if (!codigo || !email) {
       console.log("❌ Faltan parámetros:", { codigo, email });
       return res.status(400).json({ error: "Faltan parámetros" });
     }
 
-    const endpointAppsScript = "https://script.google.com/macros/s/AKfycbx5svGVrse8xvvUC-65TPo7fo1ElhIniCFa5m6QtBiKC4qYXrPdlAjqDc1xCP_UiXBI/exec";
+    const endpointAppsScript = "https://script.google.com/macros/s/AKfycbwdYtbQr_ipAomMRoPaxPdVy2fXbvLcaTw0uyXrZGrypcHVU3OEVEJA6m9W55_AvYsnTA/exec";
 
-    console.log("📨 Enviando al Apps Script:", endpointAppsScript);
+    console.log("📡 Llamando al nuevo endpoint Apps Script:", endpointAppsScript);
 
     const respuesta = await fetch(endpointAppsScript, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ codigo, email, yaRegistrado })
+      body: JSON.stringify({ codigo, email, yaRegistrado, intencionRegistro })
     });
 
     console.log("📬 Respuesta recibida:", respuesta.status, respuesta.statusText);
@@ -35,7 +35,7 @@ export default async function handler(req, res) {
     }
 
     const resultado = await respuesta.json();
-    console.log("🔒 Resultado desde Apps Script:", resultado);
+    console.log("🔐 Resultado desde Apps Script:", resultado);
 
     if (!resultado.acceso) {
       return res.json({
@@ -56,5 +56,3 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "Error interno del servidor" });
   }
 }
-
-
