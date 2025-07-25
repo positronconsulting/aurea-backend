@@ -10,7 +10,7 @@ export default async function handler(req, res) {
   try {
     const { respuestas, comentarioLibre, correo, nombre, institucion, tipoInstitucion, temasValidos } = req.body;
 
-    if (!respuestas || !comentarioLibre || !correo || !nombre || !institucion || !tipoInstitucion || !temasValidos) {
+    if (!respuestas || correo === undefined || nombre === undefined || institucion === undefined || tipoInstitucion === undefined || !temasValidos) {
       return res.status(400).json({ ok: false, error: "Faltan parámetros obligatorios" });
     }
 
