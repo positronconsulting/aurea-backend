@@ -1,5 +1,4 @@
-// archivo: /api/analizar-test.js (Vercel Middleware)
-
+// ✅ /api/analizar-test.js (Vercel Middleware)
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "https://www.positronconsulting.com");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -11,6 +10,10 @@ export default async function handler(req, res) {
   try {
     const { respuestas, comentarioLibre, correo, nombre, institucion, tipoInstitucion, temasValidos } = req.body;
 
+    if (!respuestas || !comentarioLibre || !correo || !nombre || !institucion || !tipoInstitucion || !temasValidos) {
+      return res.status(400).json({ ok: false, error: "Faltan parámetros obligatorios" });
+    }
+
     console.log("📥 Data recibida en analizar-test:", {
       correo,
       institucion,
@@ -20,8 +23,6 @@ export default async function handler(req, res) {
       comentarioLibre,
       respuestas
     });
-
-    const apiKey = process.env.OPENAI_API_KEY;
 
     const prompt = `
 Eres AUREA, la mejor psicóloga del mundo, con entrenamiento clínico avanzado en psicometría, salud mental y análisis emocional. Acabas de aplicar un test inicial a un usuario que respondió una serie de reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre los siguientes temas emocionales:
@@ -48,7 +49,7 @@ Tu tarea es:
 
 2. SIEMPRE Asignar una calificación emocional del 1 al 100 para cada tema que te mandé arriba.
 
-3. Redactar un perfil emocional con un lenguaje empático, humano y profesional, que resuma el estado emocional de la persona basado en su test. Usa un tono comprensivo, sin juicios ni tecnicismos innecesarios.
+3. Redactar un perfil emocional dirigido al encargado de Aurea en la institución. Hazlo con un lenguaje empático, humano y profesional, que resuma el estado emocional de la persona basado en su test. Usa un tono comprensivo, sin juicios ni tecnicismos innecesarios.
 
 4. IMPORTANTÍSIMO: Siempre que detectes señales o palabras literales de crisis emocional, suicidio, burnout, peligro, peligro físico, encierro, acoso, bullying, bulimia, anorexia, violación, ludopatía o trastornos alimenticios, escribe exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK".
 
@@ -70,8 +71,9 @@ ${JSON.stringify(respuestas, null, 2)}
 
 Comentario libre:
 "${comentarioLibre}"
-`.trim();
+    `.trim();
 
+    const apiKey = process.env.OPENAI_API_KEY;
     const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -80,9 +82,7 @@ Comentario libre:
       },
       body: JSON.stringify({
         model: "gpt-4",
-        messages: [
-          { role: "user", content: prompt }
-        ],
+        messages: [{ role: "user", content: prompt }],
         temperature: 0.7,
         max_tokens: 1000
       })
@@ -91,7 +91,8 @@ Comentario libre:
     const data = await openAiResponse.json();
     console.log("📩 Respuesta de OpenAI cruda:", data);
 
-    if (!data.choices || !data.choices[0]?.message?.content) {
+    if (!data?.choices?.[0]?.message?.content) {
+      console.error("❌ Respuesta vacía de OpenAI");
       return res.status(500).json({ ok: false, error: "Respuesta vacía de OpenAI" });
     }
 
@@ -101,10 +102,10 @@ Comentario libre:
       console.log("✅ JSON interpretado:", resultado);
     } catch (err) {
       console.error("❌ Error al parsear JSON:", err);
-      return res.status(500).json({ ok: false, error: "Formato inválido" });
+      return res.status(500).json({ ok: false, error: "Formato inválido en la respuesta de OpenAI" });
     }
 
-    // ✅ Registrar tokens
+    // ✅ Registro de uso de tokens
     const usage = data.usage || {};
     const costoUSD = usage.total_tokens ? usage.total_tokens * 0.00001 : 0;
 
@@ -136,7 +137,8 @@ Comentario libre:
     });
 
   } catch (err) {
-    console.error("🔥 Error en analizar-test:", err);
-    return res.status(500).json({ ok: false, error: "Error interno" });
+    console.error("🔥 Error general en analizar-test:", err);
+    return res.status(500).json({ ok: false, error: "Error interno del servidor" });
   }
 }
+
