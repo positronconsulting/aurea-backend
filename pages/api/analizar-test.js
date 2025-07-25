@@ -1,7 +1,6 @@
-// ✅ /pages/api/analizar-test.js
-
+// ✅ api/analizar-test.js
 export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "https://www.positronconsulting.com");
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
@@ -16,9 +15,6 @@ export default async function handler(req, res) {
       nombre,
       institucion,
       tipoInstitucion,
-      apellido = "",
-      telefono = "",
-      correoSOS = "",
       temasValidos = []
     } = req.body;
 
@@ -33,52 +29,54 @@ export default async function handler(req, res) {
     });
 
     const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) throw new Error("Falta OPENAI_API_KEY en las variables de entorno.");
 
     const prompt = `
-Eres AUREA, la mejor psicóloga clínica del mundo con formación en psicometría, análisis emocional, terapia cognitivo conductual, enfoque neurocognitivo conductual y psicoterapia Gestalt.
-
-Acabas de aplicar un test inicial con reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre los siguientes temas emocionales:
+Eres AUREA, la mejor psicóloga del mundo, con entrenamiento clínico avanzado en psicometría, salud mental y análisis emocional. Acabas de aplicar un test inicial a un usuario que respondió una serie de reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre los siguientes temas emocionales:
 
 ${temasValidos.join(", ")}
 
-Además, el usuario escribió un comentario libre al final.
+A continuación se presentan las respuestas al test (formato JSON por tema):
+${JSON.stringify(respuestas, null, 2)}
+
+El usuario también escribió este comentario libre:
+"${comentarioLibre}"
 
 Tu tarea es:
 
-1. Analizar clínicamente las respuestas con base en los mejores tests psicológicos:
-- PHQ-9 (depresión)
-- GAD-7 (ansiedad)
-- C-SSRS y Beck (suicidio)
-- AUDIT y ASSIST (consumo)
-- IAT (adicciones digitales)
-- PSS (estrés)
-- Maslach Burnout Inventory (burnout)
-- SCL-90-R, BDI-II, BAI
-- PSQI (sueño), UCLA (soledad), Y-BOCS (TOC), Rosenberg (autoestima)
+1. Analizar clínicamente las respuestas según criterios de escalas estandarizadas como:
+   - PHQ-9 (depresión)
+   - GAD-7 (ansiedad)
+   - C-SSRS y Escala de desesperanza de Beck (riesgo suicida)
+   - AUDIT y ASSIST (consumo de sustancias)
+   - PSS (estrés)
+   - Maslach Burnout Inventory (burnout)
+   - SCL-90-R (evaluación general de síntomas)
+   - Rosenberg (autoestima)
+   - IAT (adicciones digitales)
+   - PSQI (sueño)
+   - Escala de soledad UCLA
+   - Y-BOCS (TOC)
 
-2. Asignar una calificación emocional del 1 al 100 para cada uno de los temas analizados, exactamente en el orden recibido, y basándote en los tests adecuados. Usa solo los temas recibidos.
-
-3. Detectar si el usuario podría haber respondido de forma inconsistente, sin leer o al azar. Si lo detectas, descríbelo como una observación.
-
-4. Redactar un perfil emocional clínico inicial, profesional pero claro, orientado a RRHH o psicología institucional. Resume los hallazgos más relevantes, el estado emocional general, puntos de atención y fortalezas.
-
-5. Detectar si hay señales de riesgo psicológico o emocional. Si identificas señales de crisis, suicidio, violencia, acoso, encierro, bulimia, anorexia, violación, ludopatía o burnout extremo, escribe exactamente: "SOS". Si no hay señales críticas, escribe "OK".
-
-Usa el siguiente formato JSON:
-
+2. Vas a definir los siguientes valores:
+- "calificaciones" es un objeto con los temas evaluados y una calificación emocional del 1 al 100 según gravedad y basado en el paso 1.
+- "sosDetectado": IMPORTANTÍSIMO: Siempre que detectes señales o palabras literales de crisis emocional, suicidio, burnout, peligro, peligro físico, encierro, acoso, bullying, bulimia, anorexia, violación, ludopatía o trastornos alimenticios, escribe exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK".
+- "temaSOS" debe indicar solo un tema principal relacionado con el riesgo detectado.
+- Si no detectas ningún caso SOS, deja "temaSOS": "".
+Devuelve un objeto JSON con la siguiente estructura:
 {
+  "ok": true,
   "calificaciones": {
-    "tema1": 45,
-    "tema2": 80,
-    ...
+    "Depresión": 74,
+    "Ansiedad": 81
   },
-  "perfil": "Aquí va el resumen clínico orientado a RRHH y psicólogos institucionales",
-  "SOS": "SOS o OK",
-  "observaciones": "Si hubo patrones de falsedad o aleatoriedad. Si no, dejar en blanco."
+  "sosDetectado": "SOS",
+  "temaSOS": "Suicidios",
+  "perfil": "Texto clínico, de máximo 800 caracteres, profesional, empático y comprensivo con el usuario."
 }
-    `.trim();
+`.trim();
 
-    const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -86,45 +84,31 @@ Usa el siguiente formato JSON:
       },
       body: JSON.stringify({
         model: "gpt-4",
-        messages: [
-          { role: "user", content: prompt },
-          {
-            role: "user",
-            content: `Estas son las respuestas del usuario:\n\n${JSON.stringify(respuestas, null, 2)}\n\nComentario final:\n${comentarioLibre}`
-          }
-        ],
-        temperature: 0.4,
-        max_tokens: 1500
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.7
       })
     });
 
-    const data = await openAiResponse.json();
-    console.log("📩 Respuesta de OpenAI cruda:", data);
+    const completion = await response.json();
 
-    if (!data.choices || !data.choices[0]?.message?.content) {
-      return res.status(500).json({ ok: false, error: "Respuesta vacía de OpenAI" });
-    }
+    console.log("🧠 Respuesta OpenAI cruda:", completion);
 
-    let json;
+    const content = completion.choices?.[0]?.message?.content || "";
+
+    let data;
     try {
-      json = JSON.parse(data.choices[0].message.content);
-    } catch (err) {
-      console.error("❌ No se pudo parsear JSON:", err);
-      return res.status(500).json({ ok: false, error: "Formato inválido en la respuesta de OpenAI" });
+      data = JSON.parse(content);
+    } catch (e) {
+      console.error("⚠️ Error al parsear JSON:", e);
+      return res.status(200).json({ ok: false, error: "Formato inválido en la respuesta de OpenAI", raw: content });
     }
 
-    console.log("✅ JSON interpretado:", json);
-
-    return res.status(200).json({
-      ok: true,
-      calificaciones: json.calificaciones || {},
-      perfil: json.perfil || "",
-      SOS: json.SOS || "OK",
-      observaciones: json.observaciones || ""
-    });
+    return res.status(200).json(data);
 
   } catch (err) {
-    console.error("🔥 Error en analizar-test.js:", err);
-    return res.status(500).json({ ok: false, error: "Error interno en analizar-test" });
+    console.error("🧨 Error en analizar-test:", err);
+    return res.status(500).json({ ok: false, error: err.message });
   }
 }
+
+
