@@ -1,4 +1,5 @@
-// ✅ /api/analizar-test.js (Vercel Middleware)
+// ✅ /pages/api/analizar-test.js
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "https://www.positronconsulting.com");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -8,11 +9,18 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Método no permitido" });
 
   try {
-    const { respuestas, comentarioLibre, correo, nombre, institucion, tipoInstitucion, temasValidos } = req.body;
-
-    if (!respuestas || correo === undefined || nombre === undefined || institucion === undefined || tipoInstitucion === undefined || !temasValidos) {
-      return res.status(400).json({ ok: false, error: "Faltan parámetros obligatorios" });
-    }
+    const {
+      respuestas,
+      comentarioLibre = "",
+      correo,
+      nombre,
+      institucion,
+      tipoInstitucion,
+      apellido = "",
+      telefono = "",
+      correoSOS = "",
+      temasValidos = []
+    } = req.body;
 
     console.log("📥 Data recibida en analizar-test:", {
       correo,
@@ -24,8 +32,12 @@ export default async function handler(req, res) {
       respuestas
     });
 
+    const apiKey = process.env.OPENAI_API_KEY;
+
     const prompt = `
-Eres AUREA, la mejor psicóloga del mundo, con entrenamiento clínico avanzado en psicometría, salud mental y análisis emocional. Acabas de aplicar un test inicial a un usuario que respondió una serie de reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre los siguientes temas emocionales:
+Eres AUREA, la mejor psicóloga clínica del mundo con formación en psicometría, análisis emocional, terapia cognitivo conductual, enfoque neurocognitivo conductual y psicoterapia Gestalt.
+
+Acabas de aplicar un test inicial con reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre los siguientes temas emocionales:
 
 ${temasValidos.join(", ")}
 
@@ -33,47 +45,39 @@ Además, el usuario escribió un comentario libre al final.
 
 Tu tarea es:
 
-1. Analizar clínicamente las respuestas según criterios de escalas estandarizadas como:
-   - PHQ-9 (depresión)
-   - GAD-7 (ansiedad)
-   - C-SSRS y Escala de desesperanza de Beck (suicidio)
-   - AUDIT y ASSIST (consumo)
-   - PSS (estrés)
-   - Maslach Burnout Inventory (burnout)
-   - SCL-90-R (evaluación general de síntomas)
-   - Rosenberg (autoestima)
-   - IAT (adicciones digitales)
-   - PSQI (sueño)
-   - Escala de soledad UCLA
-   - Y-BOCS (TOC)
+1. Analizar clínicamente las respuestas con base en los mejores tests psicológicos:
+- PHQ-9 (depresión)
+- GAD-7 (ansiedad)
+- C-SSRS y Beck (suicidio)
+- AUDIT y ASSIST (consumo)
+- IAT (adicciones digitales)
+- PSS (estrés)
+- Maslach Burnout Inventory (burnout)
+- SCL-90-R, BDI-II, BAI
+- PSQI (sueño), UCLA (soledad), Y-BOCS (TOC), Rosenberg (autoestima)
 
-2. SIEMPRE Asignar una calificación emocional del 1 al 100 para cada tema que te mandé arriba.
+2. Asignar una calificación emocional del 1 al 100 para cada uno de los temas analizados, exactamente en el orden recibido, y basándote en los tests adecuados. Usa solo los temas recibidos.
 
-3. Redactar un perfil emocional dirigido al encargado de Aurea en la institución. Hazlo con un lenguaje empático, humano y profesional, que resuma el estado emocional de la persona basado en su test. Usa un tono comprensivo, sin juicios ni tecnicismos innecesarios.
+3. Detectar si el usuario podría haber respondido de forma inconsistente, sin leer o al azar. Si lo detectas, descríbelo como una observación.
 
-4. IMPORTANTÍSIMO: Siempre que detectes señales o palabras literales de crisis emocional, suicidio, burnout, peligro, peligro físico, encierro, acoso, bullying, bulimia, anorexia, violación, ludopatía o trastornos alimenticios, escribe exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK".
+4. Redactar un perfil emocional clínico inicial, profesional pero claro, orientado a RRHH o psicología institucional. Resume los hallazgos más relevantes, el estado emocional general, puntos de atención y fortalezas.
 
-Instrucciones estrictas:
-- Devuelve la información como un JSON con exactamente esta estructura:
+5. Detectar si hay señales de riesgo psicológico o emocional. Si identificas señales de crisis, suicidio, violencia, acoso, encierro, bulimia, anorexia, violación, ludopatía o burnout extremo, escribe exactamente: "SOS". Si no hay señales críticas, escribe "OK".
+
+Usa el siguiente formato JSON:
 
 {
   "calificaciones": {
-    "Depresión": 72,
-    "Ansiedad": 64,
+    "tema1": 45,
+    "tema2": 80,
     ...
   },
-  "perfil": "Texto del perfil emocional en tono profesional y empático.",
-  "SOS": "OK" // o "SOS"
+  "perfil": "Aquí va el resumen clínico orientado a RRHH y psicólogos institucionales",
+  "SOS": "SOS o OK",
+  "observaciones": "Si hubo patrones de falsedad o aleatoriedad. Si no, dejar en blanco."
 }
-
-Respuestas del usuario:
-${JSON.stringify(respuestas, null, 2)}
-
-Comentario libre:
-"${comentarioLibre}"
     `.trim();
 
-    const apiKey = process.env.OPENAI_API_KEY;
     const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -82,63 +86,45 @@ Comentario libre:
       },
       body: JSON.stringify({
         model: "gpt-4",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.7,
-        max_tokens: 1000
+        messages: [
+          { role: "user", content: prompt },
+          {
+            role: "user",
+            content: `Estas son las respuestas del usuario:\n\n${JSON.stringify(respuestas, null, 2)}\n\nComentario final:\n${comentarioLibre}`
+          }
+        ],
+        temperature: 0.4,
+        max_tokens: 1500
       })
     });
 
     const data = await openAiResponse.json();
     console.log("📩 Respuesta de OpenAI cruda:", data);
 
-    if (!data?.choices?.[0]?.message?.content) {
-      console.error("❌ Respuesta vacía de OpenAI");
+    if (!data.choices || !data.choices[0]?.message?.content) {
       return res.status(500).json({ ok: false, error: "Respuesta vacía de OpenAI" });
     }
 
-    let resultado;
+    let json;
     try {
-      resultado = JSON.parse(data.choices[0].message.content);
-      console.log("✅ JSON interpretado:", resultado);
+      json = JSON.parse(data.choices[0].message.content);
     } catch (err) {
-      console.error("❌ Error al parsear JSON:", err);
+      console.error("❌ No se pudo parsear JSON:", err);
       return res.status(500).json({ ok: false, error: "Formato inválido en la respuesta de OpenAI" });
     }
 
-    // ✅ Registro de uso de tokens
-    const usage = data.usage || {};
-    const costoUSD = usage.total_tokens ? usage.total_tokens * 0.00001 : 0;
-
-    try {
-      await fetch("https://script.google.com/macros/s/AKfycbyHn1qrFocq0pkjujypoB-vK7MGmGFz6vH4t2qVfHcziTcuMB3abi3UegPGdNno3ibULA/exec", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fecha: new Date().toISOString(),
-          usuario: correo,
-          institucion,
-          inputTokens: usage.prompt_tokens || 0,
-          outputTokens: usage.completion_tokens || 0,
-          totalTokens: usage.total_tokens || 0,
-          costoUSD: parseFloat(costoUSD.toFixed(6))
-        })
-      });
-      console.log("🧾 Tokens registrados correctamente.");
-    } catch (e) {
-      console.warn("⚠️ Error al registrar tokens:", e.message);
-    }
+    console.log("✅ JSON interpretado:", json);
 
     return res.status(200).json({
       ok: true,
-      calificaciones: resultado.calificaciones || {},
-      perfil: resultado.perfil || "",
-      SOS: resultado.SOS || "OK",
-      usage
+      calificaciones: json.calificaciones || {},
+      perfil: json.perfil || "",
+      SOS: json.SOS || "OK",
+      observaciones: json.observaciones || ""
     });
 
   } catch (err) {
-    console.error("🔥 Error general en analizar-test:", err);
-    return res.status(500).json({ ok: false, error: "Error interno del servidor" });
+    console.error("🔥 Error en analizar-test.js:", err);
+    return res.status(500).json({ ok: false, error: "Error interno en analizar-test" });
   }
 }
-
