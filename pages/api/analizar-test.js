@@ -103,6 +103,32 @@ Devuelve un objeto JSON con la siguiente estructura:
       return res.status(200).json({ ok: false, error: "Formato inválido en la respuesta de OpenAI", raw: content });
     }
 
+    // ✅ Registro de tokens en Google Sheets
+    try {
+      const usage = completion.usage || {};
+      const totalTokens = usage.total_tokens || 0;
+      const inputTokens = usage.prompt_tokens || 0;
+      const outputTokens = usage.completion_tokens || 0;
+      const costoUSD = totalTokens * 0.00001;
+
+      await fetch("https://script.google.com/macros/s/AKfycbyHn1qrFocq0pkjujypoB-vK7MGmGFz6vH4t2qVfHcziTcuMB3abi3UegPGdNno3ibULA/exec", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fecha: new Date().toISOString(),
+          usuario: correo,
+          institucion,
+          inputTokens,
+          outputTokens,
+          totalTokens,
+          costoUSD: parseFloat(costoUSD.toFixed(6))
+        })
+      });
+      console.log("📊 Tokens registrados correctamente.");
+    } catch (err) {
+      console.error("⚠️ Error al registrar tokens:", err);
+    }
+
     return res.status(200).json(data);
 
   } catch (err) {
@@ -110,5 +136,3 @@ Devuelve un objeto JSON con la siguiente estructura:
     return res.status(500).json({ ok: false, error: err.message });
   }
 }
-
-
