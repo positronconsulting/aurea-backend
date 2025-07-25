@@ -90,7 +90,6 @@ Devuelve un objeto JSON con la siguiente estructura:
     });
 
     const completion = await response.json();
-
     console.log("🧠 Respuesta OpenAI cruda:", completion);
 
     const content = completion.choices?.[0]?.message?.content || "";
@@ -100,7 +99,11 @@ Devuelve un objeto JSON con la siguiente estructura:
       data = JSON.parse(content);
     } catch (e) {
       console.error("⚠️ Error al parsear JSON:", e);
-      return res.status(200).json({ ok: false, error: "Formato inválido en la respuesta de OpenAI", raw: content });
+      return res.status(200).json({
+        ok: false,
+        error: true,
+        raw: content
+      });
     }
 
     // ✅ Registro de tokens en Google Sheets
