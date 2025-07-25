@@ -72,7 +72,7 @@ Devuelve un objeto JSON con la siguiente estructura:
   },
   "sosDetectado": "SOS",
   "temaSOS": "Suicidios",
-  "perfil": "Texto clínico, de máximo 800 caracteres, profesional, empático y comprensivo con el usuario."
+  "perfil": "Texto clínico, de máximo 800 caracteres, profesional, empático y comprensivo con el usuario. Si notas algún patrón en las respuestas que pueda indicar que hubo engaño o que no se contestó el test de forma honesta, por favor indícalo."
 }
 `.trim();
 
