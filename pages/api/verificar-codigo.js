@@ -16,7 +16,7 @@ export default async function handler(req, res) {
     }
 
 
-    const endpointAppsScript = "https://script.google.com/macros/s/AKfycbwdYtbQr_ipAomMRoPaxPdVy2fXbvLcaTw0uyXrZGrypcHVU3OEVEJA6m9W55_AvYsnTA/exec";
+    const endpointAppsScript = "https://script.google.com/macros/s/AKfycbzvlZIbTZEBR03VwnDyYdoX3WXFe8cd0zKsR4W-SxxJqozo4ek9wYyIbtEJKNznV10VJg/exec";
 
     console.log("📡 Llamando al Apps Script:", endpointAppsScript);
 
