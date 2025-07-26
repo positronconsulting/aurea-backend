@@ -7,13 +7,14 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Método no permitido" });
 
   try {
-    const { codigo, email, yaRegistrado, intencionRegistro } = req.body;
-    console.log("📥 Datos recibidos:", { codigo, email, yaRegistrado, intencionRegistro });
+    const { codigo, yaRegistrado, intencionRegistro } = req.body;
+    console.log("📥 Datos recibidos:", { codigo, yaRegistrado, intencionRegistro });
 
-    if (!codigo || !email) {
-      console.warn("❌ Faltan parámetros:", { codigo, email });
-      return res.status(400).json({ error: "Faltan parámetros" });
+    if (!codigo) {
+     console.warn("❌ Falta el código institucional.");
+     return res.status(400).json({ error: "Falta el código institucional" });
     }
+
 
     const endpointAppsScript = "https://script.google.com/macros/s/AKfycbwdYtbQr_ipAomMRoPaxPdVy2fXbvLcaTw0uyXrZGrypcHVU3OEVEJA6m9W55_AvYsnTA/exec";
 
