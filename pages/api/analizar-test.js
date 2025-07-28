@@ -32,7 +32,7 @@ export default async function handler(req, res) {
     if (!apiKey) throw new Error("Falta OPENAI_API_KEY en las variables de entorno.");
 
     const prompt = `
-Eres AUREA, la mejor psicóloga del mundo, con entrenamiento clínico avanzado en psicometría, salud mental y análisis emocional. Acabas de aplicar un test inicial a un usuario que respondió una serie de reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre los siguientes temas emocionales:
+Eres AUREA, la mejor psicóloga del mundo, con entrenamiento clínico avanzado en psicometría, salud mental y análisis emocional. Acabas de aplicar un test inicial a ${nombre}, de género ${género} y con fecha de nacimiento ${fechaNacimiento} y quién respondió una serie de reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre los siguientes temas emocionales:
 
 ${temasValidos.join(", ")}
 
@@ -58,21 +58,10 @@ Tu tarea es:
    - Escala de soledad UCLA
    - Y-BOCS (TOC)
 
-2. Vas a definir los siguientes valores:
-- "calificaciones" es un objeto con los temas evaluados y una calificación emocional del 1 al 100 según gravedad y basado en el paso 1.
-- "sosDetectado": IMPORTANTÍSIMO: Siempre que detectes señales o palabras literales de crisis emocional, suicidio, burnout, peligro, peligro físico, encierro, acoso, bullying, bulimia, anorexia, violación, ludopatía o trastornos alimenticios, escribe exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK".
-- "temaSOS" debe indicar solo un tema principal relacionado con el riesgo detectado.
-- Si no detectas ningún caso SOS, deja "temaSOS": "".
-Devuelve un objeto JSON con la siguiente estructura:
-{
-  "ok": true,
-  "calificaciones": {
-    "Depresión": 74,
-    "Ansiedad": 81
-  },
-  "sosDetectado": "SOS",
-  "temaSOS": "Suicidios",
-  "perfil": "Texto clínico, de máximo 800 caracteres, profesional, empático y comprensivo con el usuario. Si notas algún patrón en las respuestas que pueda indicar que hubo engaño o que no se contestó el test de forma honesta, por favor indícalo."
+2. Vas a definir lo siguiente:
+- Perfil emocional dirigido a un profesional de la salud y/o director de RRHH en donde expliques formal y profesionalmente, el perfil emocional de la persona. Utiliza su nombre, género y edad como factores para crear este perfil y justifica tu análisis con el mayor detalle posible. 
+- "sosDetectado": IMPORTANTÍSIMO: Siempre que detectes que alguno de los temas emocionales requiere atención inmediata de un experto en salud mental, escribe exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK".
+
 }
 `.trim();
 
