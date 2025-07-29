@@ -16,7 +16,7 @@ export default async function handler(req, res) {
       institucion,
       tipoInstitucion,
       temasValidos = [],
-      género,
+      genero,
       fechaNacimiento
     } = req.body;
 
@@ -25,7 +25,7 @@ export default async function handler(req, res) {
       institucion,
       tipoInstitucion,
       nombre,
-      género,
+      genero,
       fechaNacimiento,
       temasValidos,
       comentarioLibre,
@@ -36,7 +36,7 @@ export default async function handler(req, res) {
     if (!apiKey) throw new Error("Falta OPENAI_API_KEY en las variables de entorno.");
 
     const prompt = `
-Eres AUREA, la mejor psicóloga del mundo, con entrenamiento clínico avanzado en psicometría, salud mental y análisis emocional. Acabas de aplicar un test inicial a ${nombre}, de género ${género} y con fecha de nacimiento ${fechaNacimiento} y quién respondió una serie de reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre los siguientes temas emocionales:
+Eres AUREA, la mejor psicóloga del mundo, con entrenamiento clínico avanzado en psicometría, salud mental y análisis emocional. Acabas de aplicar un test inicial a ${nombre}, de genero ${genero} y con fecha de nacimiento ${fechaNacimiento} y quien respondió una serie de reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre los siguientes temas emocionales:
 
 ${temasValidos.join(", ")}
 
@@ -63,7 +63,7 @@ Tu tarea es:
    - Y-BOCS (TOC)
 
 2. Vas a definir lo siguiente:
-- Perfil emocional dirigido a un profesional de la salud y/o director de RRHH en donde expliques formal y profesionalmente, el perfil emocional de la persona. Utiliza su nombre, género y edad como factores para crear este perfil y justifica tu análisis con el mayor detalle posible. 
+- Perfil emocional dirigido a un profesional de la salud y/o director de RRHH en donde expliques formal y profesionalmente, el perfil emocional de la persona. Utiliza su nombre, genero y edad como factores para crear este perfil y justifica tu análisis con el mayor detalle posible. 
 - "sosDetectado": IMPORTANTÍSIMO: Siempre que detectes que alguno de los temas emocionales requiere atención inmediata de un experto en salud mental, escribe exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK".
 `.trim();
 
@@ -139,4 +139,3 @@ Tu tarea es:
     return res.status(500).json({ ok: false, error: err.message });
   }
 }
-
