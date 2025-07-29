@@ -15,7 +15,9 @@ export default async function handler(req, res) {
       nombre,
       institucion,
       tipoInstitucion,
-      temasValidos = []
+      temasValidos = [],
+      género,
+      fechaNacimiento
     } = req.body;
 
     console.log("📥 Data recibida en analizar-test:", {
@@ -23,6 +25,8 @@ export default async function handler(req, res) {
       institucion,
       tipoInstitucion,
       nombre,
+      género,
+      fechaNacimiento,
       temasValidos,
       comentarioLibre,
       respuestas
@@ -61,8 +65,6 @@ Tu tarea es:
 2. Vas a definir lo siguiente:
 - Perfil emocional dirigido a un profesional de la salud y/o director de RRHH en donde expliques formal y profesionalmente, el perfil emocional de la persona. Utiliza su nombre, género y edad como factores para crear este perfil y justifica tu análisis con el mayor detalle posible. 
 - "sosDetectado": IMPORTANTÍSIMO: Siempre que detectes que alguno de los temas emocionales requiere atención inmediata de un experto en salud mental, escribe exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK".
-
-}
 `.trim();
 
     const response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -83,16 +85,24 @@ Tu tarea es:
 
     const content = completion.choices?.[0]?.message?.content || "";
 
-    let data;
+    // 🧠 Intento de parsear respuesta de OpenAI como JSON
+    let data = {};
+    let parseError = false;
+
     try {
       data = JSON.parse(content);
     } catch (e) {
       console.error("⚠️ Error al parsear JSON:", e);
-      return res.status(200).json({
-        ok: false,
+
+      // Creamos una respuesta con el texto crudo pero sin detener el flujo
+      data = {
+        ok: true,
         error: true,
+        mensaje: "No se pudo parsear como JSON. Se devuelve el contenido crudo generado por OpenAI.",
         raw: content
-      });
+      };
+
+      parseError = true;
     }
 
     // ✅ Registro de tokens en Google Sheets
@@ -116,6 +126,7 @@ Tu tarea es:
           costoUSD: parseFloat(costoUSD.toFixed(6))
         })
       });
+
       console.log("📊 Tokens registrados correctamente.");
     } catch (err) {
       console.error("⚠️ Error al registrar tokens:", err);
@@ -128,3 +139,4 @@ Tu tarea es:
     return res.status(500).json({ ok: false, error: err.message });
   }
 }
+
