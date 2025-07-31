@@ -1,4 +1,5 @@
-import { sendEmail } from '@/utils/sendgrid';
+import { sendEmail } from '../../utils/sendgrid';
+
 
 export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
