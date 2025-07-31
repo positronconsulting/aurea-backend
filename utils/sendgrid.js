@@ -1,7 +1,7 @@
 // utils/sendgrid.js
-import { Resend } from 'resend';
+import sgMail from '@sendgrid/mail';
 
-const resend = new Resend(process.env.SENDGRID_API_KEY);
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 /**
  * Envía un correo electrónico a los destinatarios especificados.
@@ -12,13 +12,14 @@ const resend = new Resend(process.env.SENDGRID_API_KEY);
  */
 export async function sendEmail(to, subject, text) {
   try {
-    const response = await resend.emails.send({
-      from: 'Sistema AUREA <alertas@positronconsulting.com>',
+    const msg = {
       to,
+      from: { email: 'alertas@positronconsulting.com', name: 'Sistema AUREA' },
       subject,
       text
-    });
+    };
 
+    const response = await sgMail.send(msg);
     console.log("📧 Correo enviado exitosamente:", response);
     return { ok: true, enviado: response };
   } catch (error) {
