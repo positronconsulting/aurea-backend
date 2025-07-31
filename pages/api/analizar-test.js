@@ -1,13 +1,10 @@
 import { OpenAI } from 'openai';
-import { sendEmail } from '../../utils/sendgrid';
-
 
 const API_RESPUESTAS = "https://script.google.com/macros/s/AKfycbxSTPQOLzlmtxcq9OYSJjr4MZZMaVfXBthHdTvt_1g91pfECM7yDrI_sQU2q5bBcG_YiQ/exec";
 const API_TOKENS = "https://script.google.com/macros/s/AKfycbyHn1qrFocq0pkjujypoB-vK7MGmGFz6vH4t2qVfHcziTcuMB3abi3UegPGdNno3ibULA/exec";
+const API_CORREO = "https://aurea-backend-two.vercel.app/api/enviar-correo"; // Asegúrate que este sea correcto
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
@@ -17,7 +14,7 @@ export default async function handler(req, res) {
     const { tipoInstitucion, correoSOS } = req.body;
     console.log("📥 tipoInstitucion recibido:", tipoInstitucion);
 
-    // 1. Obtener datos desde Apps Script
+    // 1. Obtener respuestas desde Google Apps Script
     const respuestaRaw = await fetch(API_RESPUESTAS, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -32,6 +29,7 @@ export default async function handler(req, res) {
 
     const { usuario, sexo, fechaNacimiento, info, respuestas } = datos;
 
+    // 2. Preparar prompt
     const prompt = `
 Eres AUREA, la mejor psicóloga clínica del mundo. Tu tarea es analizar un test emocional con las siguientes respuestas y generar un perfil emocional centrado en el bienestar psicológico del evaluado.
 
@@ -50,9 +48,10 @@ Devuelve exclusivamente un objeto JSON como este:
   "perfil": "Texto del perfil emocional...",
   "alertaSOS": true | false,
   "temaDetectado": "Solo si hay alertaSOS"
-}`.trim();
+}
+`.trim();
 
-    // 2. Llamar a OpenAI
+    // 3. Consultar a OpenAI
     const completion = await openai.chat.completions.create({
       model: "gpt-4",
       messages: [{ role: "user", content: prompt }],
@@ -61,6 +60,7 @@ Devuelve exclusivamente un objeto JSON como este:
 
     const contenido = completion.choices[0].message.content;
     let evaluacion;
+
     try {
       evaluacion = JSON.parse(contenido);
     } catch (error) {
@@ -70,34 +70,20 @@ Devuelve exclusivamente un objeto JSON como este:
 
     const { perfil, alertaSOS = false, temaDetectado = "" } = evaluacion;
 
-    // 3. Enviar correo
-    const asunto = alertaSOS
-      ? `🚨 [AUREA - SOS] Evaluación crítica detectada (${usuario})`
-      : `🧠 [AUREA] Perfil emocional generado (${usuario})`;
+    // 4. Enviar correo de forma asíncrona
+    fetch(API_CORREO, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ usuario, tipoInstitucion, perfil, alertaSOS, temaDetectado, correoSOS })
+    }).then(() => {
+      console.log("📧 Solicitud de correo enviada correctamente");
+    }).catch(err => {
+      console.error("❌ Error al enviar solicitud de correo:", err.message);
+    });
 
-    const cuerpo = `
-Hola,
-
-Se ha generado el siguiente perfil emocional para el usuario ${usuario} (${tipoInstitucion}):
-
-${perfil}
-
-${alertaSOS
-  ? `⚠️ Se detectó una posible alerta en el tema: ${temaDetectado}`
-  : `✅ No se detectaron alertas críticas.`}
-
-Atentamente,
-Sistema AUREA
-`.trim();
-
-    const destinatarios = ["alfredo@positronconsulting.com"];
-    if (alertaSOS && correoSOS) destinatarios.push(correoSOS);
-
-    await sendEmail(destinatarios, asunto, cuerpo);
-
-    // 4. Registrar tokens
+    // 5. Registrar uso de tokens
     const { prompt_tokens, completion_tokens, total_tokens } = completion.usage;
-    await fetch(API_TOKENS, {
+    fetch(API_TOKENS, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -109,14 +95,12 @@ Sistema AUREA
         totalTokens: total_tokens,
         costoUSD: (total_tokens / 1000 * 0.01).toFixed(4)
       })
+    }).catch(err => {
+      console.error("❌ Error al registrar tokens:", err.message);
     });
 
-    return res.status(200).json({
-      ok: true,
-      perfil,
-      alertaSOS,
-      temaDetectado
-    });
+    // 6. Respuesta inmediata
+    return res.status(200).json({ ok: true, perfil, alertaSOS, temaDetectado });
 
   } catch (err) {
     console.error("🔥 Error en analizar-test.js:", err);
