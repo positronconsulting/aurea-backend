@@ -8,33 +8,40 @@ export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Método no permitido" });
 
   try {
-    const {
-      respuestas,
-      comentarioLibre = "",
-      correo,
-      nombre,
-      institucion,
-      tipoInstitucion,
-      temasValidos = [],
-      genero,
-      fechaNacimiento
-    } = req.body;
+    const { tipoInstitucion } = req.body;
 
-    console.log("📥 Data recibida en analizar-test:", {
-      correo,
-      institucion,
-      tipoInstitucion,
-      nombre,
-      genero,
-      fechaNacimiento,
-      temasValidos,
-      comentarioLibre,
-      respuestas
+    if (!tipoInstitucion) {
+      return res.status(400).json({ ok: false, error: "Falta tipoInstitucion" });
+    }
+
+    // 📡 Llamar a Apps Script para obtener la primera fila sin "Enviado"
+    const sheetResponse = await fetch("https://script.google.com/macros/s/AKfycbzlO8GCDMcnTFaT3jkH2zIii7q_rvtruV8ZLuuXLajBK-wO0MEI2VeJqAD_UuCzvIQHAQ/exec", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tipoInstitucion })
     });
 
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) throw new Error("Falta OPENAI_API_KEY en las variables de entorno.");
+    const sheetData = await sheetResponse.json();
 
+    if (!sheetData.ok) {
+      console.error("❌ Error desde Apps Script:", sheetData.error);
+      return res.status(500).json({ ok: false, error: sheetData.error });
+    }
+
+    const {
+      usuario: correo,
+      nombre,
+      institucion,
+      sexo: genero,
+      fechaNacimiento,
+      info,
+      respuestas
+    } = sheetData;
+
+    const temasValidos = Object.keys(respuestas || {});
+    const comentarioLibre = info || "";
+
+    // 📦 Preparar prompt (NO modificar sin autorización)
     const prompt = `
 Eres AUREA, la mejor psicóloga del mundo, con entrenamiento clínico avanzado en psicometría, salud mental y análisis emocional. Acabas de aplicar un test inicial a ${nombre}, de genero ${genero} y con fecha de nacimiento ${fechaNacimiento} y quien respondió una serie de reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre los siguientes temas emocionales:
 
@@ -67,7 +74,11 @@ Tu tarea es:
 - "sosDetectado": IMPORTANTÍSIMO: Siempre que detectes que alguno de los temas emocionales requiere atención inmediata de un experto en salud mental, escribe exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK".
 `.trim();
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    // 🔐 Llamar a OpenAI
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) throw new Error("Falta OPENAI_API_KEY");
+
+    const aiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -80,12 +91,11 @@ Tu tarea es:
       })
     });
 
-    const completion = await response.json();
+    const completion = await aiResponse.json();
     console.log("🧠 Respuesta OpenAI cruda:", completion);
 
     const content = completion.choices?.[0]?.message?.content || "";
 
-    // 🧠 Intento de parsear respuesta de OpenAI como JSON
     let data = {};
     let parseError = false;
 
@@ -93,19 +103,16 @@ Tu tarea es:
       data = JSON.parse(content);
     } catch (e) {
       console.error("⚠️ Error al parsear JSON:", e);
-
-      // Creamos una respuesta con el texto crudo pero sin detener el flujo
       data = {
         ok: true,
         error: true,
         mensaje: "No se pudo parsear como JSON. Se devuelve el contenido crudo generado por OpenAI.",
         raw: content
       };
-
       parseError = true;
     }
 
-    // ✅ Registro de tokens en Google Sheets
+    // 📊 Registrar tokens
     try {
       const usage = completion.usage || {};
       const totalTokens = usage.total_tokens || 0;
