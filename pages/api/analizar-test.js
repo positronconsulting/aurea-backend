@@ -20,10 +20,16 @@ export default async function handler(req, res) {
       body: JSON.stringify({ tipoInstitucion })
     });
 
+    if (!sheetResponse.ok) {
+      const fallbackText = await sheetResponse.text();
+      console.error("❌ Apps Script no respondió correctamente:", fallbackText);
+      return res.status(502).json({ ok: false, error: `Apps Script falló: ${fallbackText}` });
+    }
+
     const sheetData = await sheetResponse.json();
 
     if (!sheetData.ok) {
-      console.error("❌ Error desde Apps Script:", sheetData.error);
+      console.error("❌ Error lógico desde Apps Script:", sheetData.error);
       return res.status(500).json({ ok: false, error: sheetData.error });
     }
 
@@ -39,14 +45,14 @@ export default async function handler(req, res) {
       respuestas
     } = sheetData;
 
-    if (!correo || !nombre || !respuestas) {
+    if (!correo || !nombre || !respuestas || Object.keys(respuestas).length === 0) {
       return res.status(400).json({
         ok: false,
-        error: "Faltan datos esenciales en la fila: correo, nombre o respuestas."
+        error: "Faltan datos esenciales en la fila: correo, nombre o respuestas vacías."
       });
     }
 
-    const temasValidos = Object.keys(respuestas || {});
+    const temasValidos = Object.keys(respuestas);
     const comentarioLibre = info || "";
 
     // ✅ PROMPT (NO MODIFICAR SIN AUTORIZACIÓN)
@@ -117,7 +123,7 @@ Tu tarea es:
       };
     }
 
-    // 📊 Registrar uso de tokens
+    // 📊 Registrar tokens
     try {
       const usage = completion.usage || {};
       const totalTokens = usage.total_tokens || 0;
@@ -150,4 +156,7 @@ Tu tarea es:
     console.error("🧨 Error en analizar-test:", err);
     return res.status(500).json({ ok: false, error: err.message });
   }
+
+  // 🔒 Catch-all por si algún flujo no devuelve nada explícitamente
+  return res.status(500).json({ ok: false, error: "Respuesta vacía no controlada" });
 }
