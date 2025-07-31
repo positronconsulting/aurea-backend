@@ -49,8 +49,7 @@ Devuelve exclusivamente un objeto JSON como este:
   "perfil": "Texto del perfil emocional...",
   "alertaSOS": true | false,
   "temaDetectado": "Solo si hay alertaSOS"
-}
-`.trim();
+}`.trim();
 
     // 2. Llamar a OpenAI
     const completion = await openai.chat.completions.create({
@@ -107,7 +106,7 @@ Sistema AUREA
         inputTokens: prompt_tokens,
         outputTokens: completion_tokens,
         totalTokens: total_tokens,
-        costoUSD: (total_tokens / 1000 * 0.01).toFixed(4) // estimado
+        costoUSD: (total_tokens / 1000 * 0.01).toFixed(4)
       })
     });
 
@@ -123,4 +122,3 @@ Sistema AUREA
     return res.status(500).json({ ok: false, error: "Error interno en analizar-test" });
   }
 }
-

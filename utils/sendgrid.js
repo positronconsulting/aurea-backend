@@ -1,45 +1,28 @@
-import fetch from 'node-fetch';
+// utils/sendgrid.js
+import { Resend } from 'resend';
 
-export async function sendWithService({ to, subject, body }) {
+const resend = new Resend(process.env.SENDGRID_API_KEY);
+
+/**
+ * Envía un correo electrónico a los destinatarios especificados.
+ * @param {string[]} to - Lista de correos.
+ * @param {string} subject - Asunto del correo.
+ * @param {string} text - Cuerpo del mensaje (texto plano).
+ * @returns {Promise<object>} - Resultado del intento de envío.
+ */
+export async function sendEmail(to, subject, text) {
   try {
-    const apiKey = process.env.SENDGRID_API_KEY;
-
-    const emailData = {
-      personalizations: [{
-        to: Array.isArray(to)
-          ? to.map(email => ({ email }))
-          : [{ email: to }]
-      }],
-      from: {
-        email: "alertas@positronconsulting.com",
-        name: "Sistema AUREA"
-      },
+    const response = await resend.emails.send({
+      from: 'Sistema AUREA <alertas@positronconsulting.com>',
+      to,
       subject,
-      content: [{
-        type: "text/plain",
-        value: body
-      }]
-    };
-
-    const response = await fetch("https://api.sendgrid.com/v3/mail/send", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(emailData)
+      text
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error("❌ Error en envío SendGrid:", errorText);
-      return { ok: false, error: errorText };
-    }
-
-    console.log("📨 Correo enviado con éxito");
-    return { ok: true };
-  } catch (err) {
-    console.error("🔥 Error interno al enviar correo:", err);
-    return { ok: false, error: err.message };
+    console.log("📧 Correo enviado exitosamente:", response);
+    return { ok: true, enviado: response };
+  } catch (error) {
+    console.error("❌ Error al enviar correo:", error);
+    return { ok: false, error: error.message };
   }
 }
