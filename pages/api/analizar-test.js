@@ -1,5 +1,6 @@
 import { OpenAI } from 'openai';
-import { sendEmail } from '@/utils/sendgrid';
+import { sendEmail } from '../../utils/sendgrid';
+
 
 const API_RESPUESTAS = "https://script.google.com/macros/s/AKfycbxSTPQOLzlmtxcq9OYSJjr4MZZMaVfXBthHdTvt_1g91pfECM7yDrI_sQU2q5bBcG_YiQ/exec";
 const API_TOKENS = "https://script.google.com/macros/s/AKfycbyHn1qrFocq0pkjujypoB-vK7MGmGFz6vH4t2qVfHcziTcuMB3abi3UegPGdNno3ibULA/exec";
