@@ -43,7 +43,7 @@ Datos demográficos:
 Respuestas del test:
 ${Object.entries(respuestas).map(([k, v]) => `${k}: ${v}`).join("\n")}
 
-Devuelve exclusivamente un objeto JSON como este:
+Devuelve SIEMPRE y exclusivamente un objeto JSON como este:
 {
   "perfil": "Texto del perfil emocional...",
   "alertaSOS": true | false,
