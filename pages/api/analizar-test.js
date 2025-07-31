@@ -157,6 +157,6 @@ Tu tarea es:
     return res.status(500).json({ ok: false, error: err.message });
   }
 
-  // 🔒 Catch-all por si algún flujo no devuelve nada explícitamente
-  return res.status(500).json({ ok: false, error: "Respuesta vacía no controlada" });
+  // 🔒 Final fallback si nada más devolvió respuesta
+  return res.status(500).json({ ok: false, error: "Respuesta vacía no controlada (final fallback)" });
 }
