@@ -4,6 +4,7 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 const API_RESPUESTAS = "https://script.google.com/macros/s/AKfycbxSTPQOLzlmtxcq9OYSJjr4MZZMaVfXBthHdTvt_1g91pfECM7yDrI_sQU2q5bBcG_YiQ/exec";
 const API_ENVIAR_CORREO = "https://aurea-backend-two.vercel.app/api/enviar-correo";
+const API_TOKENS = "https://script.google.com/macros/s/AKfycbyHn1qrFocq0pkjujypoB-vK7MGmGFz6vH4t2qVfHcziTcuMB3abi3UegPGdNno3ibULA/exec";
 
 export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
@@ -82,8 +83,28 @@ Devuelve exclusivamente un objeto JSON como este:
       console.error("❌ Error al enviar correo:", resultadoCorreo.error);
     }
 
-    // 5. Finalizar
-    return res.status(200).json({ ok: true });
+    // 5. Regresar OK inmediato
+    res.status(200).json({ ok: true });
+
+    // 6. Registrar tokens (después de enviar respuesta)
+    try {
+      const { prompt_tokens, completion_tokens, total_tokens } = completion.usage;
+      await fetch(API_TOKENS, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fecha: new Date().toISOString(),
+          usuario,
+          institucion: tipoInstitucion,
+          inputTokens: prompt_tokens,
+          outputTokens: completion_tokens,
+          totalTokens: total_tokens,
+          costoUSD: (total_tokens / 1000 * 0.01).toFixed(4)
+        })
+      });
+    } catch (error) {
+      console.error("⚠️ Error al registrar tokens:", error.message);
+    }
 
   } catch (err) {
     console.error("🔥 Error en analizar-test.js:", err);
