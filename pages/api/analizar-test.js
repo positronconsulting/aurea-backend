@@ -1,4 +1,3 @@
-// ✅ api/analizar-test.js
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
@@ -14,7 +13,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ ok: false, error: "Falta tipoInstitucion" });
     }
 
-    // 📡 Llamar a Apps Script para obtener la primera fila sin "Enviado"
+    // 📡 Obtener fila desde Apps Script
     const sheetResponse = await fetch("https://script.google.com/macros/s/AKfycbzlO8GCDMcnTFaT3jkH2zIii7q_rvtruV8ZLuuXLajBK-wO0MEI2VeJqAD_UuCzvIQHAQ/exec", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -28,6 +27,8 @@ export default async function handler(req, res) {
       return res.status(500).json({ ok: false, error: sheetData.error });
     }
 
+    console.log("✅ Datos recibidos desde Apps Script:", sheetData);
+
     const {
       usuario: correo,
       nombre,
@@ -38,10 +39,17 @@ export default async function handler(req, res) {
       respuestas
     } = sheetData;
 
+    if (!correo || !nombre || !respuestas) {
+      return res.status(400).json({
+        ok: false,
+        error: "Faltan datos esenciales en la fila: correo, nombre o respuestas."
+      });
+    }
+
     const temasValidos = Object.keys(respuestas || {});
     const comentarioLibre = info || "";
 
-    // 📦 Preparar prompt (NO modificar sin autorización)
+    // ✅ PROMPT (NO MODIFICAR SIN AUTORIZACIÓN)
     const prompt = `
 Eres AUREA, la mejor psicóloga del mundo, con entrenamiento clínico avanzado en psicometría, salud mental y análisis emocional. Acabas de aplicar un test inicial a ${nombre}, de genero ${genero} y con fecha de nacimiento ${fechaNacimiento} y quien respondió una serie de reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre los siguientes temas emocionales:
 
@@ -74,7 +82,7 @@ Tu tarea es:
 - "sosDetectado": IMPORTANTÍSIMO: Siempre que detectes que alguno de los temas emocionales requiere atención inmediata de un experto en salud mental, escribe exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK".
 `.trim();
 
-    // 🔐 Llamar a OpenAI
+    // 🔐 Llamada a OpenAI
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error("Falta OPENAI_API_KEY");
 
@@ -97,8 +105,6 @@ Tu tarea es:
     const content = completion.choices?.[0]?.message?.content || "";
 
     let data = {};
-    let parseError = false;
-
     try {
       data = JSON.parse(content);
     } catch (e) {
@@ -109,10 +115,9 @@ Tu tarea es:
         mensaje: "No se pudo parsear como JSON. Se devuelve el contenido crudo generado por OpenAI.",
         raw: content
       };
-      parseError = true;
     }
 
-    // 📊 Registrar tokens
+    // 📊 Registrar uso de tokens
     try {
       const usage = completion.usage || {};
       const totalTokens = usage.total_tokens || 0;
