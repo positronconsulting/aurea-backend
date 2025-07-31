@@ -23,7 +23,16 @@ export default async function handler(req, res) {
       body: JSON.stringify({ tipoInstitucion })
     });
 
-    const sheetData = await sheetResponse.json();
+    const sheetRaw = await sheetResponse.text();
+    let sheetData;
+
+    try {
+      sheetData = JSON.parse(sheetRaw);
+    } catch (err) {
+      console.error("❌ Respuesta de Apps Script no es JSON válido:", sheetRaw);
+      return res.status(500).json({ ok: false, error: "Respuesta de Apps Script no es JSON válido" });
+    }
+
     console.log("📄 sheetData:", sheetData);
 
     if (!sheetData.ok) {
