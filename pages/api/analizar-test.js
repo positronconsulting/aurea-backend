@@ -1,109 +1,63 @@
-export default async function handler(req, res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+// /api/analizar-test.js (Vercel backend)
 
-  if (req.method === "OPTIONS") return res.status(200).end();
+import { config } from "dotenv";
+config();
+
+export default async function handler(req, res) {
   if (req.method !== "POST") {
-    return res.status(405).json({ ok: false, error: "Método no permitido" });
+    return res.status(405).json({ ok: false, error: "Method not allowed" });
   }
 
   try {
-    const { tipoInstitucion } = req.body;
+    const { tipoInstitucion, correoSOS } = req.body;
     console.log("📥 tipoInstitucion recibido:", tipoInstitucion);
 
-    if (!tipoInstitucion) {
-      return res.status(400).json({ ok: false, error: "Falta tipoInstitucion" });
-    }
+    // 🔗 Apps Script URL para obtener respuestas
+    const scriptUrl = "https://script.google.com/macros/s/AKfycbxSTPQOLzlmtxcq9OYSJjr4MZZMaVfXBthHdTvt_1g91pfECM7yDrI_sQU2q5bBcG_YiQ/exec";
 
-    // 📡 Obtener datos desde Apps Script
-    const sheetResponse = await fetch("https://script.google.com/macros/s/AKfycbzlO8GCDMcnTFaT3jkH2zIii7q_rvtruV8ZLuuXLajBK-wO0MEI2VeJqAD_UuCzvIQHAQ/exec", {
+    const respuestaScript = await fetch(scriptUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ tipoInstitucion })
     });
 
-    const sheetRaw = await sheetResponse.text();
-    let sheetData;
-
+    const textoPlano = await respuestaScript.text();
+    let datos;
     try {
-      sheetData = JSON.parse(sheetRaw);
+      datos = JSON.parse(textoPlano);
     } catch (err) {
-      console.error("❌ Respuesta de Apps Script no es JSON válido:", sheetRaw);
+      console.error("❌ Respuesta de Apps Script no es JSON válido:", textoPlano);
       return res.status(500).json({ ok: false, error: "Respuesta de Apps Script no es JSON válido" });
     }
 
-    console.log("📄 sheetData:", sheetData);
-
-    if (!sheetData.ok) {
-      return res.status(500).json({ ok: false, error: sheetData.error || "Error en Apps Script" });
+    if (!datos.ok) {
+      console.error("❌ Error lógico en datos recibidos:", datos.error);
+      return res.status(500).json({ ok: false, error: datos.error });
     }
 
     const {
-      usuario: correo,
-      nombre,
-      institucion,
-      sexo: genero,
+      usuario,
+      sexo,
       fechaNacimiento,
       info,
-      respuestas
-    } = sheetData;
+      respuestas,
+      hoja,
+      fila
+    } = datos;
 
-    console.log("📌 correo:", correo);
-    console.log("📌 nombre:", nombre);
-    console.log("📌 respuestas:", respuestas);
-
-    if (!correo || !nombre || !respuestas || Object.keys(respuestas).length === 0) {
-      return res.status(400).json({
-        ok: false,
-        error: "Faltan datos: correo, nombre o respuestas vacías"
-      });
+    if (!usuario || !sexo || !fechaNacimiento || !respuestas) {
+      console.error("❌ Datos incompletos del test");
+      return res.status(500).json({ ok: false, error: "Datos incompletos del test" });
     }
 
-    const temasValidos = Object.keys(respuestas);
-    const comentarioLibre = info || "";
+    // 🧠 Consulta a OpenAI
+    const prompt = generarPrompt({ respuestas, sexo, fechaNacimiento, info });
 
-    // ✅ PROMPT COMPLETO – NO MODIFICAR
-    const prompt = `
-Eres AUREA, la mejor psicóloga del mundo, con entrenamiento clínico avanzado en psicometría, salud mental y análisis emocional. Acabas de aplicar un test inicial a ${nombre}, de genero ${genero} y con fecha de nacimiento ${fechaNacimiento} y quien respondió una serie de reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre los siguientes temas emocionales:
-
-${temasValidos.join(", ")}
-
-A continuación se presentan las respuestas al test (formato JSON por tema):
-${JSON.stringify(respuestas, null, 2)}
-
-El usuario también escribió este comentario libre:
-"${comentarioLibre}"
-
-Tu tarea es:
-
-1. Analizar clínicamente las respuestas según criterios de escalas estandarizadas como:
-   - PHQ-9 (depresión)
-   - GAD-7 (ansiedad)
-   - C-SSRS y Escala de desesperanza de Beck (riesgo suicida)
-   - AUDIT y ASSIST (consumo de sustancias)
-   - PSS (estrés)
-   - Maslach Burnout Inventory (burnout)
-   - SCL-90-R (evaluación general de síntomas)
-   - Rosenberg (autoestima)
-   - IAT (adicciones digitales)
-   - PSQI (sueño)
-   - Escala de soledad UCLA
-   - Y-BOCS (TOC)
-
-2. Vas a definir lo siguiente:
-- Perfil emocional dirigido a un profesional de la salud y/o director de RRHH en donde expliques formal y profesionalmente, el perfil emocional de la persona. Utiliza su nombre, genero y edad como factores para crear este perfil y justifica tu análisis con el mayor detalle posible. 
-- "sosDetectado": IMPORTANTÍSIMO: Siempre que detectes que alguno de los temas emocionales requiere atención inmediata de un experto en salud mental, escribe exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK".
-`.trim();
-
-    console.log("🧠 Prompt generado:", prompt.slice(0, 500), "...");
-
-    const apiKey = process.env.OPENAI_API_KEY;
-    const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+    const respuestaOpenAI = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json"
       },
       body: JSON.stringify({
         model: "gpt-4",
@@ -112,58 +66,82 @@ Tu tarea es:
       })
     });
 
-    const data = await openAiResponse.json();
-    console.log("📩 Respuesta de OpenAI cruda:", data);
+    const jsonOpenAI = await respuestaOpenAI.json();
+    const perfil = jsonOpenAI.choices?.[0]?.message?.content?.trim();
+    const inputTokens = jsonOpenAI.usage?.prompt_tokens || 0;
+    const outputTokens = jsonOpenAI.usage?.completion_tokens || 0;
+    const totalTokens = jsonOpenAI.usage?.total_tokens || 0;
 
-    if (!data.choices || !data.choices[0]?.message?.content) {
-      return res.status(500).json({ ok: false, error: "Respuesta vacía de OpenAI" });
-    }
+    const alertaSOS = perfil?.includes("ALERTA SOS:");
+    const temaDetectado = alertaSOS ? extraerTemaSOS(perfil) : "";
 
-    let json;
-    try {
-      json = JSON.parse(data.choices[0].message.content);
-    } catch (err) {
-      console.error("❌ No se pudo parsear JSON de OpenAI:", err);
-      return res.status(500).json({ ok: false, error: "Formato inválido en la respuesta de OpenAI" });
-    }
+    // 📧 Envío de correo
+    const asunto = alertaSOS
+      ? `🛑 PERFIL CON ALERTA: ${usuario}`
+      : `🧠 Nuevo perfil emocional generado: ${usuario}`;
 
-    const usage = data.usage || {};
-    const costoUSD = usage.total_tokens ? usage.total_tokens * 0.00001 : 0;
+    const cuerpo = `
+Institución: ${tipoInstitucion}
+Hoja: ${hoja}, fila ${fila}
+Correo: ${usuario}
+Sexo: ${sexo}
+Fecha de nacimiento: ${fechaNacimiento}
 
+${perfil}
+    `.trim();
+
+    const destinatarios = ["alfredo@positronconsulting.com"];
+    if (correoSOS) destinatarios.push(correoSOS);
+
+    await fetch("https://api.sendgrid.com/v3/mail/send", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.SENDGRID_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        personalizations: [{ to: destinatarios.map(email => ({ email })) }],
+        from: { email: "alertas@positronconsulting.com", name: "Sistema AUREA" },
+        subject: asunto,
+        content: [{ type: "text/plain", value: cuerpo }]
+      })
+    });
+
+    // 📊 Registrar tokens
     await fetch("https://script.google.com/macros/s/AKfycbyHn1qrFocq0pkjujypoB-vK7MGmGFz6vH4t2qVfHcziTcuMB3abi3UegPGdNno3ibULA/exec", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         fecha: new Date().toISOString(),
-        usuario: correo,
-        institucion,
-        inputTokens: usage.prompt_tokens || 0,
-        outputTokens: usage.completion_tokens || 0,
-        totalTokens: usage.total_tokens || 0,
-        costoUSD: parseFloat(costoUSD.toFixed(6))
+        usuario,
+        institucion: tipoInstitucion,
+        inputTokens,
+        outputTokens,
+        totalTokens,
+        costoUSD: (totalTokens * 0.00001).toFixed(5)
       })
     });
 
-    console.log("✅ JSON interpretado:", json);
+    console.log("✅ Perfil emocional procesado y enviado exitosamente");
+    return res.status(200).json({ ok: true });
 
-    return res.status(200).json({
-      ok: true,
-      usuario: correo,
-      nombre,
-      institucion,
-      tipoInstitucion,
-      perfil: json.perfil || "",
-      alertaSOS: json.alertaSOS || false,
-      temaDetectado: json.temaDetectado || "",
-      correoSOS: json.correoSOS || "",
-      inputTokens: usage.prompt_tokens || 0,
-      outputTokens: usage.completion_tokens || 0,
-      totalTokens: usage.total_tokens || 0,
-      costoUSD: parseFloat(costoUSD.toFixed(6))
-    });
-
-  } catch (err) {
-    console.error("🔥 Error en analizar-test.js:", err);
+  } catch (error) {
+    console.error("🔥 Error en analizar-test.js:", error);
     return res.status(500).json({ ok: false, error: "Error interno en analizar-test" });
   }
+}
+
+function generarPrompt({ respuestas, sexo, fechaNacimiento, info }) {
+  return `Eres un psicólogo experto. Analiza el siguiente perfil emocional. Considera que el usuario es ${sexo}, nacido el ${fechaNacimiento}. Información adicional: ${info}.
+
+Estas son sus respuestas:
+${Object.entries(respuestas).map(([k, v]) => `- ${k}: ${v}`).join("\n")}
+
+Genera un perfil emocional dirigido a especialistas. Si detectas una posible alerta grave, finaliza el texto con la línea:
+ALERTA SOS: [tema relacionado].`;
+}
+
+function extraerTemaSOS(texto) {
+  const match = texto.match(/ALERTA SOS: (.+)/);
+  return match?.[1]?.trim() || "";
 }
