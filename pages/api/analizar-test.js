@@ -1,8 +1,9 @@
+// ✅ /pages/api/analizar-test.js
 import { OpenAI } from 'openai';
 
 const API_RESPUESTAS = "https://script.google.com/macros/s/AKfycbxSTPQOLzlmtxcq9OYSJjr4MZZMaVfXBthHdTvt_1g91pfECM7yDrI_sQU2q5bBcG_YiQ/exec";
 const API_TOKENS = "https://script.google.com/macros/s/AKfycbyHn1qrFocq0pkjujypoB-vK7MGmGFz6vH4t2qVfHcziTcuMB3abi3UegPGdNno3ibULA/exec";
-const API_CORREO = "https://aurea-backend-two.vercel.app/api/enviar-correo"; // Asegúrate que este sea correcto
+const API_CORREO = "https://aurea-backend-two.vercel.app/api/enviar-correo";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -14,7 +15,7 @@ export default async function handler(req, res) {
     const { tipoInstitucion, correoSOS } = req.body;
     console.log("📥 tipoInstitucion recibido:", tipoInstitucion);
 
-    // 1. Obtener respuestas desde Google Apps Script
+    // 1. Obtener datos desde Apps Script
     const respuestaRaw = await fetch(API_RESPUESTAS, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -29,7 +30,6 @@ export default async function handler(req, res) {
 
     const { usuario, sexo, fechaNacimiento, info, respuestas } = datos;
 
-    // 2. Preparar prompt
     const prompt = `
 Eres AUREA, la mejor psicóloga clínica del mundo. Tu tarea es analizar un test emocional con las siguientes respuestas y generar un perfil emocional centrado en el bienestar psicológico del evaluado.
 
@@ -43,7 +43,7 @@ Datos demográficos:
 Respuestas del test:
 ${Object.entries(respuestas).map(([k, v]) => `${k}: ${v}`).join("\n")}
 
-Devuelve SIEMPRE y exclusivamente un objeto JSON como este:
+Devuelve exclusivamente un objeto JSON como este:
 {
   "perfil": "Texto del perfil emocional...",
   "alertaSOS": true | false,
@@ -51,7 +51,7 @@ Devuelve SIEMPRE y exclusivamente un objeto JSON como este:
 }
 `.trim();
 
-    // 3. Consultar a OpenAI
+    // 2. Llamar a OpenAI
     const completion = await openai.chat.completions.create({
       model: "gpt-4",
       messages: [{ role: "user", content: prompt }],
@@ -60,7 +60,6 @@ Devuelve SIEMPRE y exclusivamente un objeto JSON como este:
 
     const contenido = completion.choices[0].message.content;
     let evaluacion;
-
     try {
       evaluacion = JSON.parse(contenido);
     } catch (error) {
@@ -70,20 +69,20 @@ Devuelve SIEMPRE y exclusivamente un objeto JSON como este:
 
     const { perfil, alertaSOS = false, temaDetectado = "" } = evaluacion;
 
-    // 4. Enviar correo de forma asíncrona
+    // 3. Enviar correo a endpoint externo (no bloquear)
     fetch(API_CORREO, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ usuario, tipoInstitucion, perfil, alertaSOS, temaDetectado, correoSOS })
     }).then(() => {
-      console.log("📧 Solicitud de correo enviada correctamente");
+      console.log("📧 Correo solicitado a enviar-correo");
     }).catch(err => {
-      console.error("❌ Error al enviar solicitud de correo:", err.message);
+      console.error("❌ Error al llamar a enviar-correo:", err.message);
     });
 
-    // 5. Registrar uso de tokens
+    // 4. Registrar tokens
     const { prompt_tokens, completion_tokens, total_tokens } = completion.usage;
-    fetch(API_TOKENS, {
+    await fetch(API_TOKENS, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -95,12 +94,15 @@ Devuelve SIEMPRE y exclusivamente un objeto JSON como este:
         totalTokens: total_tokens,
         costoUSD: (total_tokens / 1000 * 0.01).toFixed(4)
       })
-    }).catch(err => {
-      console.error("❌ Error al registrar tokens:", err.message);
     });
 
-    // 6. Respuesta inmediata
-    return res.status(200).json({ ok: true, perfil, alertaSOS, temaDetectado });
+    // 5. Respuesta final al cliente
+    return res.status(200).json({
+      ok: true,
+      perfil,
+      alertaSOS,
+      temaDetectado
+    });
 
   } catch (err) {
     console.error("🔥 Error en analizar-test.js:", err);
