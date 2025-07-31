@@ -10,6 +10,8 @@ export default async function handler(req, res) {
 
   try {
     const { tipoInstitucion } = req.body;
+    console.log("📥 tipoInstitucion recibido:", tipoInstitucion);
+
     if (!tipoInstitucion) {
       return res.status(400).json({ ok: false, error: "Falta tipoInstitucion" });
     }
@@ -22,6 +24,8 @@ export default async function handler(req, res) {
     });
 
     const sheetData = await sheetResponse.json();
+    console.log("📄 sheetData:", sheetData);
+
     if (!sheetData.ok) {
       return res.status(500).json({ ok: false, error: sheetData.error || "Error en Apps Script" });
     }
@@ -35,6 +39,10 @@ export default async function handler(req, res) {
       info,
       respuestas
     } = sheetData;
+
+    console.log("📌 correo:", correo);
+    console.log("📌 nombre:", nombre);
+    console.log("📌 respuestas:", respuestas);
 
     if (!correo || !nombre || !respuestas || Object.keys(respuestas).length === 0) {
       return res.status(400).json({
@@ -78,6 +86,8 @@ Tu tarea es:
 - Perfil emocional dirigido a un profesional de la salud y/o director de RRHH en donde expliques formal y profesionalmente, el perfil emocional de la persona. Utiliza su nombre, genero y edad como factores para crear este perfil y justifica tu análisis con el mayor detalle posible. 
 - "sosDetectado": IMPORTANTÍSIMO: Siempre que detectes que alguno de los temas emocionales requiere atención inmediata de un experto en salud mental, escribe exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK".
 `.trim();
+
+    console.log("🧠 Prompt generado:", prompt.slice(0, 500), "...");
 
     const apiKey = process.env.OPENAI_API_KEY;
     const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
