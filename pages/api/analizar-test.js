@@ -76,7 +76,7 @@ Devuelve exclusivamente un objeto JSON como este:
     try {
       evaluacion = JSON.parse(contenido);
     } catch (error) {
-      console.error("❌ Error al parsear JSON desde OpenAI:", contenido);
+      console.error("❌ Error al parsear JSON desde OpenAI. Respuesta completa:\n" + contenido);
       return res.status(500).json({ ok: false, error: "Respuesta de OpenAI no es JSON válido" });
     }
 
