@@ -2,7 +2,7 @@ import { OpenAI } from 'openai';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const API_RESPUESTAS = "https://script.google.com/macros/s/AKfycbxSTPQOLzlmtxcq9OYSJjr4MZZMaVfXBthHdTvt_1g91pfECM7yDrI_sQU2q5bBcG_YiQ/exec";
+const API_RESPUESTAS = "https://script.google.com/macros/s/AKfycbxDX-RsH7tZpRcjl13gOLHwlV1CiOABg3XSj7UHmEhQqapLV_7hJg0qMGSR95HiVcrnQw/exec";
 const API_ENVIAR_CORREO = "https://aurea-backend-two.vercel.app/api/enviar-correo";
 const API_TOKENS = "https://script.google.com/macros/s/AKfycbyHn1qrFocq0pkjujypoB-vK7MGmGFz6vH4t2qVfHcziTcuMB3abi3UegPGdNno3ibULA/exec";
 
