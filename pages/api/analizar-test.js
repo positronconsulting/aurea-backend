@@ -25,19 +25,36 @@ export default async function handler(req, res) {
 
     const { usuario, sexo, fechaNacimiento, info, respuestas } = datos;
 
-    // 2. Crear prompt
+    // 2. Crear prompt (ACTUALIZADO)
     const prompt = `
-Eres AUREA, la mejor psicóloga clínica del mundo. Tu tarea es analizar un test emocional con las siguientes respuestas y generar un perfil emocional centrado en el bienestar psicológico del evaluado.
+Eres AUREA, la mejor psicóloga del mundo, con entrenamiento clínico avanzado en psicometría, salud mental y análisis emocional. Acabas de aplicar un test inicial a ${usuario.nombre}, de genero ${sexo} y con fecha de nacimiento ${fechaNacimiento}, quien respondió una serie de reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre diversos temas emocionales.
 
-Las respuestas están organizadas como "Pregunta": "Respuesta". Sé precisa, profesional y con enfoque humano. Usa lenguaje comprensible para psicólogos o profesionales de salud mental. Si detectas un riesgo, indícalo con claridad y di a qué tema se relaciona. Si no hay señales de alerta, indícalo también.
+A continuación se presentan las respuestas al test (formato JSON):
+${JSON.stringify(respuestas, null, 2)}
 
-Datos demográficos:
-- Sexo: ${sexo}
-- Fecha de nacimiento: ${fechaNacimiento}
-- Comentario libre: ${info}
+El usuario también escribió este comentario libre:
+"${info}"
 
-Respuestas del test:
-${Object.entries(respuestas).map(([k, v]) => `${k}: ${v}`).join("\n")}
+Tu tarea es:
+
+1. Analizar clínicamente las respuestas según criterios de escalas estandarizadas como:
+   - PHQ-9 (depresión)
+   - GAD-7 (ansiedad)
+   - C-SSRS y Escala de desesperanza de Beck (riesgo suicida)
+   - AUDIT y ASSIST (consumo de sustancias)
+   - PSS (estrés)
+   - Maslach Burnout Inventory (burnout)
+   - SCL-90-R (evaluación general de síntomas)
+   - Rosenberg (autoestima)
+   - IAT (adicciones digitales)
+   - PSQI (sueño)
+   - Escala de soledad UCLA
+   - Y-BOCS (TOC)
+
+2. Vas a definir lo siguiente:
+- "perfil": Un texto profesional dirigido a un psicólogo clínico o director de RRHH que explique el perfil emocional de la persona. Utiliza su nombre, género y edad para contextualizar y justifica tu análisis con el mayor detalle posible.
+- "alertaSOS": true si hay riesgo emocional urgente que requiere atención inmediata por un profesional. Si no lo hay, false.
+- "temaDetectado": si hay alertaSOS, indica el tema que más contribuye a la alerta. Si no la hay, deja vacío o null.
 
 Devuelve exclusivamente un objeto JSON como este:
 {
