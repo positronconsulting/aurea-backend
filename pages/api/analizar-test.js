@@ -2,7 +2,7 @@ import { OpenAI } from 'openai';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const API_RESPUESTAS = "https://script.google.com/macros/s/AKfycbxDX-RsH7tZpRcjl13gOLHwlV1CiOABg3XSj7UHmEhQqapLV_7hJg0qMGSR95HiVcrnQw/exec";
+const API_RESPUESTAS = "https://script.google.com/macros/s/AKfycbzAWKtMoGimqSjdkbbnQGcr3aMm7POiwoJbMoVJKVnWjkCim4qx5cn2c57UCMlFzCCL/exec";
 const API_ENVIAR_CORREO = "https://aurea-backend-two.vercel.app/api/enviar-correo";
 const API_TOKENS = "https://script.google.com/macros/s/AKfycbyHn1qrFocq0pkjujypoB-vK7MGmGFz6vH4t2qVfHcziTcuMB3abi3UegPGdNno3ibULA/exec";
 
@@ -25,7 +25,7 @@ export default async function handler(req, res) {
 
     const { usuario, sexo, fechaNacimiento, info, respuestas } = datos;
 
-    // 2. Crear prompt (ACTUALIZADO)
+    // 2. Crear prompt (NO CAMBIADO)
     const prompt = `
 Eres AUREA, la mejor psicóloga del mundo, con entrenamiento clínico avanzado en psicometría, salud mental y análisis emocional. Acabas de aplicar un test inicial a ${usuario.nombre}, de genero ${sexo} y con fecha de nacimiento ${fechaNacimiento}, quien respondió una serie de reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre diversos temas emocionales.
 
@@ -82,7 +82,7 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
 
     const { perfil, alertaSOS = false, temaDetectado = "" } = evaluacion;
 
-    // 4. Llamar a enviar-correo
+    // ✅ 4. Llamar a enviar-correo (agregando nombre completo)
     const correoRaw = await fetch(API_ENVIAR_CORREO, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -100,10 +100,10 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
       console.error("❌ Error al enviar correo:", resultadoCorreo.error);
     }
 
-    // 5. Regresar OK inmediato
+    // 5. OK
     res.status(200).json({ ok: true });
 
-    // 6. Registrar tokens (después de enviar respuesta)
+    // 6. Registrar tokens
     try {
       const { prompt_tokens, completion_tokens, total_tokens } = completion.usage;
       await fetch(API_TOKENS, {
