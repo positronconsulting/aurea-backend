@@ -56,7 +56,7 @@ Tu tarea es:
 - "alertaSOS": true si hay riesgo emocional urgente que requiere atención inmediata por un profesional. Si no lo hay, false.
 - "temaDetectado": si hay alertaSOS, indica el tema que más contribuye a la alerta. Si no la hay, deja vacío o null.
 
-Devuelve exclusivamente un objeto JSON como este:
+Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues explicaciones ni encabezados. NO INCLUYAS ningún texto antes o después. Única y exclusivamente el JSON en el siguiente formato:
 {
   "perfil": "Texto del perfil emocional...",
   "alertaSOS": true | false,
