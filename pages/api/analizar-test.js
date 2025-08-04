@@ -23,7 +23,13 @@ export default async function handler(req, res) {
     const datos = await respuestaRaw.json();
     if (!datos.ok) return res.status(500).json({ ok: false, error: "Error al obtener respuestas del test" });
 
-    const { usuario, sexo, fechaNacimiento, info, respuestas } = datos;
+    const { usuario: correo, nombre, sexo, fechaNacimiento, info, respuestas } = datos;
+
+    const usuario = {
+    correo,
+    nombre
+    };
+
 
     // 2. Crear prompt (NO CAMBIADO)
     const prompt = `

@@ -1,6 +1,5 @@
 import { sendEmail } from '../../utils/sendgrid';
 
-
 export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Método no permitido" });
@@ -8,14 +7,18 @@ export default async function handler(req, res) {
   try {
     const { usuario, tipoInstitucion, perfil, alertaSOS, temaDetectado, correoSOS } = req.body;
 
+    const nombreUsuario = typeof usuario === "string"
+      ? usuario
+      : usuario?.nombre || usuario?.correo || "Usuario";
+
     const asunto = alertaSOS
-      ? `🚨 [AUREA - SOS] Evaluación crítica detectada (${usuario})`
-      : `🧠 [AUREA] Perfil emocional generado (${usuario})`;
+      ? `🚨 [AUREA - SOS] Evaluación crítica detectada (${nombreUsuario})`
+      : `🧠 [AUREA] Perfil emocional generado (${nombreUsuario})`;
 
     const cuerpo = `
 Hola,
 
-Se ha generado el siguiente perfil emocional para el usuario ${usuario} (${tipoInstitucion}):
+Se ha generado el siguiente perfil emocional para el usuario ${nombreUsuario} (${tipoInstitucion}):
 
 ${perfil}
 
