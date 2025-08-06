@@ -96,7 +96,7 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
           model: "gpt-4",
           messages: [{ role: "user", content: prompt }],
           temperature: 0.7,
-          max_tokens: 200
+          max_tokens: 400
         }),
         signal: controller.signal
       });
