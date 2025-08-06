@@ -81,19 +81,35 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
 }
 `.trim();
 
-    const openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: "gpt-4",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.7,
-        max_tokens: 200
-      })
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000); // ⏱️ 10 segundos
+
+    let openAiResponse;
+    try {
+      openAiResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model: "gpt-4",
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.7,
+          max_tokens: 200
+        }),
+        signal: controller.signal
+      });
+    } catch (error) {
+      if (error.name === "AbortError") {
+        console.error("⏱️ Timeout alcanzado al llamar a OpenAI");
+        return res.status(504).json({ ok: false, error: "Timeout en llamada a OpenAI" });
+      } else {
+        throw error;
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
 
     const data = await openAiResponse.json();
     console.log("📩 Respuesta de OpenAI cruda:", data);
@@ -130,20 +146,17 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
     console.log("✅ JSON interpretado:", json);
 
     return res.status(200).json({
-     ok: true,
-     mensajeUsuario: json.mensajeUsuario || "🤖 Respuesta vacía.",
-     temaDetectado: json.temaDetectado || "",
-     calificacion: json.calificacion || "",
-     porcentaje: json.porcentaje || "",
-     justificacion: json.justificacion || "",
-     SOS: json.SOS || "OK"
+      ok: true,
+      mensajeUsuario: json.mensajeUsuario || "🤖 Respuesta vacía.",
+      temaDetectado: json.temaDetectado || "",
+      calificacion: json.calificacion || "",
+      porcentaje: json.porcentaje || "",
+      justificacion: json.justificacion || "",
+      SOS: json.SOS || "OK"
     });
-
 
   } catch (err) {
     console.error("🔥 Error en aurea.js:", err);
     return res.status(500).json({ ok: false, error: "Error interno en AUREA" });
   }
 }
-
-
