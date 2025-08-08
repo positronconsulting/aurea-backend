@@ -93,7 +93,7 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
           Authorization: `Bearer ${apiKey}`
         },
         body: JSON.stringify({
-          model: "gpt-5",
+          model: "gpt-4",
           messages: [{ role: "user", content: prompt }],
           temperature: 0.7,
           max_tokens: 400
