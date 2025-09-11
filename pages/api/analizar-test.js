@@ -1,4 +1,4 @@
-// pages/api/analizar-test.js
+// ✅ pages/api/analizar-test.js
 export default async function handler(req, res) {
   // CORS básico
   res.setHeader("Access-Control-Allow-Origin", "*");
@@ -11,7 +11,7 @@ export default async function handler(req, res) {
     const { tipoInstitucion, email, correoSOS, codigo } = req.body || {};
     if (!tipoInstitucion) return res.status(400).json({ ok:false, error: "tipoInstitucion requerido" });
 
-    const GAS_RESP_URL = "https://script.google.com/macros/s/AKfycbwl84s-LVDjI__QT7V1NE4qX8a1Mew18yTQDe0M3EGnGpvGlckkrazUgZ1YYLS3xI_I9w/exec";
+    const GAS_RESP_URL    = "https://script.google.com/macros/s/AKfycbwl84s-LVDjI__QT7V1NE4qX8a1Mew18yTQDe0M3EGnGpvGlckkrazUgZ1YYLS3xI_I9w/exec";
     const GAS_VERUSER_URL = "https://script.google.com/macros/s/AKfycbxfzxX_s97kIU4qv6M0dcaNrPIRxGDqECpd-uvoi5BDPVaIOY5ybWiVFiwqUss81Y-oNQ/exec";
     const API_ENVIAR_CORREO = "https://aurea-backend-two.vercel.app/api/enviar-correo";
 
@@ -160,17 +160,31 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
       });
     }
 
-    // 5) Enviar correo (Alfredo + Usuario + correoSOS)
+    // 5) Enviar correo (Usuario + correoSOS + Alfredo SIEMPRE)
+    const destinatarios = [
+      correoUsuario,
+      (correoSOS || "").trim(),
+      "alfredo@positronconsulting.com"
+    ].filter(Boolean);
+
     const enviar = await fetch(API_ENVIAR_CORREO, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        // Compatibilidad con tu API actual:
         usuario: { nombre, correo: correoUsuario },
         tipoInstitucion: tipo,
         perfil: resultado.perfil,
         alertaSOS: !!resultado.sos,
         temaDetectado: resultado.tema,
-        correoSOS: correoSOS || ""
+        correoSOS: correoSOS || "",
+
+        // ✅ Garantía explícita de destinatarios:
+        to: [correoUsuario],                 // usuario
+        cc: destinatarios.filter(d => d !== correoUsuario), // cc correoSOS + Alfredo
+        // Si tu API soporta bcc o un campo genérico, lo incluimos también:
+        bcc: [], // opcional
+        extraDestinatarios: destinatarios    // en caso de que tu API espere este campo
       })
     });
 
@@ -192,4 +206,5 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
     return res.status(500).json({ ok: false, error: "Error interno en analizar-test" });
   }
 }
+
 
