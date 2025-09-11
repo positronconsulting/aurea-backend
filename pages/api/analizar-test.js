@@ -1,45 +1,92 @@
-import { OpenAI } from 'openai';
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-const API_RESPUESTAS = "https://script.google.com/macros/s/AKfycbzAWKtMoGimqSjdkbbnQGcr3aMm7POiwoJbMoVJKVnWjkCim4qx5cn2c57UCMlFzCCL/exec";
-const API_ENVIAR_CORREO = "https://aurea-backend-two.vercel.app/api/enviar-correo";
-const API_TOKENS = "https://script.google.com/macros/s/AKfycbyHn1qrFocq0pkjujypoB-vK7MGmGFz6vH4t2qVfHcziTcuMB3abi3UegPGdNno3ibULA/exec";
-
+// pages/api/analizar-test.js
 export default async function handler(req, res) {
+  // CORS básico
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Método no permitido" });
 
   try {
-    const { tipoInstitucion, correoSOS } = req.body;
-    console.log("📥 tipoInstitucion recibido:", tipoInstitucion);
+    const { tipoInstitucion, email, correoSOS, codigo } = req.body || {};
+    if (!tipoInstitucion) return res.status(400).json({ ok:false, error: "tipoInstitucion requerido" });
 
-    // 1. Obtener respuestas del Apps Script
-    const respuestaRaw = await fetch(API_RESPUESTAS, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tipoInstitucion })
-    });
-    const datos = await respuestaRaw.json();
-    if (!datos.ok) return res.status(500).json({ ok: false, error: "Error al obtener respuestas del test" });
+    const GAS_RESP_URL = "https://script.google.com/macros/s/AKfycbwl84s-LVDjI__QT7V1NE4qX8a1Mew18yTQDe0M3EGnGpvGlckkrazUgZ1YYLS3xI_I9w/exec";
+    const GAS_VERUSER_URL = "https://script.google.com/macros/s/AKfycbxfzxX_s97kIU4qv6M0dcaNrPIRxGDqECpd-uvoi5BDPVaIOY5ybWiVFiwqUss81Y-oNQ/exec";
+    const API_ENVIAR_CORREO = "https://aurea-backend-two.vercel.app/api/enviar-correo";
 
-    const { usuario: correo, nombre, sexo, fechaNacimiento, info, respuestas } = datos;
-
-    const usuario = {
-    correo,
-    nombre
+    const normTipo = (t) => String(t||"").trim().toLowerCase();
+    const tipo = normTipo(tipoInstitucion);
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const inval = (v) => {
+      const s = (v==null ? "" : String(v)).trim().toLowerCase();
+      return s === "" || s === "none" || s === "null" || s === "undefined" || s === "n/a";
     };
 
+    async function postJSON(url, data) {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data || {})
+      });
+      const text = await r.text();
+      let j=null; try{ j=JSON.parse(text); } catch(_){}
+      return { ok: r.ok, j, text, status: r.status };
+    }
 
-    // 2. Crear prompt (NO CAMBIADO)
+    // 1) GAS: obtener fila (por email si viene; si no, primer pendiente)
+    async function obtenerFila() {
+      const payload = { tipoInstitucion: tipo };
+      if (email) payload.email = String(email).toLowerCase();
+      return await postJSON(GAS_RESP_URL, payload);
+    }
+
+    let g = await obtenerFila();
+    if (!g.j?.ok) {
+      // Reintento por posible latencia (5s)
+      await sleep(5000);
+      g = await obtenerFila();
+      if (!g.j?.ok) {
+        return res.status(200).json({
+          ok: false,
+          stage: "GAS",
+          error: g.j?.error || g.text || "GAS sin pendiente",
+          detail: { tipo, email: email || "", codigo: codigo || "" }
+        });
+      }
+    }
+
+    const correoUsuario = String(g.j.usuario || "").toLowerCase();
+    let nombre = g.j.nombre || "";
+    const sexo = g.j.sexo || "";
+    const fechaNacimiento = g.j.fechaNacimiento || "";
+    const respuestas = g.j.respuestas || {};
+    const comentarioLibre = inval(g.j.info) ? "" : String(g.j.info).trim();
+
+    // 2) Intentar enriquecer nombre desde Usuarios (si no vino)
+    if (!nombre && correoUsuario) {
+      try {
+        const r = await postJSON(GAS_VERUSER_URL, { correo: correoUsuario, codigo: codigo || "" });
+        const usr = r?.j?.usuario;
+        if (usr && (usr.nombre || usr.apellido)) {
+          nombre = [usr.nombre||"", usr.apellido||""].join(" ").trim();
+        }
+      } catch(_) { /* noop */ }
+      if (!nombre) nombre = correoUsuario.split("@")[0];
+    }
+
+    // 3) PROMPT — INTACTO (no modificar)
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(500).json({ ok:false, error:"Falta OPENAI_API_KEY" });
+
     const prompt = `
-Eres AUREA, la mejor psicóloga del mundo, con entrenamiento clínico avanzado en psicometría, salud mental y análisis emocional. Acabas de aplicar un test inicial a ${usuario.nombre}, de genero ${sexo} y con fecha de nacimiento ${fechaNacimiento}, quien respondió una serie de reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre diversos temas emocionales.
+Eres AUREA, la mejor psicóloga del mundo, con entrenamiento clínico avanzado en psicometría, salud mental y análisis emocional. Acabas de aplicar un test inicial a ${nombre}, de genero ${sexo} y con fecha de nacimiento ${fechaNacimiento}, quien respondió una serie de reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre diversos temas emocionales.
 
 A continuación se presentan las respuestas al test (formato JSON):
 ${JSON.stringify(respuestas, null, 2)}
 
 El usuario también escribió este comentario libre:
-"${info}"
+"${comentarioLibre}"
 
 Tu tarea es:
 
@@ -70,67 +117,79 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
 }
 `.trim();
 
-    // 3. Llamar a OpenAI
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.7
-    });
-
-    const contenido = completion.choices[0].message.content;
-    let evaluacion;
-    try {
-      evaluacion = JSON.parse(contenido);
-    } catch (error) {
-      console.error("❌ Error al parsear JSON desde OpenAI. Respuesta completa:\n" + contenido);
-      return res.status(500).json({ ok: false, error: "Respuesta de OpenAI no es JSON válido" });
+    async function pedirOpenAI() {
+      const r = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: "gpt-4",
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.7,
+          max_tokens: 800
+        })
+      });
+      const j = await r.json();
+      const content = j?.choices?.[0]?.message?.content || "";
+      let out;
+      try { out = JSON.parse(content); }
+      catch { out = { perfil: content, alertaSOS: false, temaDetectado: "" }; }
+      return { completion: j, out };
     }
 
-    const { perfil, alertaSOS = false, temaDetectado = "" } = evaluacion;
+    const validoPerfil = (s) => !inval(s) && String(s).trim().length >= 50;
 
-    // ✅ 4. Llamar a enviar-correo (agregando nombre completo)
-    const correoRaw = await fetch(API_ENVIAR_CORREO, {
+    // 4) OpenAI con validación fuerte y reintento
+    let intento = 0, maxIntentos = 2, resultado;
+    while (intento < maxIntentos) {
+      const { out } = await pedirOpenAI();
+      const perfil = out?.perfil || "";
+      if (validoPerfil(perfil)) {
+        resultado = { perfil, sos: !!out?.alertaSOS, tema: out?.temaDetectado || "" };
+        break;
+      }
+      intento++;
+    }
+
+    if (!resultado) {
+      // No hay perfil válido → Wix reportará error
+      return res.status(200).json({
+        ok: false,
+        stage: "OPENAI",
+        error: "Perfil vacío/None/corto tras reintento",
+        detail: { tipo, email: email||"", codigo: codigo||"", correoUsuario }
+      });
+    }
+
+    // 5) Enviar correo (Alfredo + Usuario + correoSOS)
+    const enviar = await fetch(API_ENVIAR_CORREO, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        usuario,
-        tipoInstitucion,
-        perfil,
-        alertaSOS,
-        temaDetectado,
-        correoSOS
+        usuario: { nombre, correo: correoUsuario },
+        tipoInstitucion: tipo,
+        perfil: resultado.perfil,
+        alertaSOS: !!resultado.sos,
+        temaDetectado: resultado.tema,
+        correoSOS: correoSOS || ""
       })
     });
-    const resultadoCorreo = await correoRaw.json();
-    if (!resultadoCorreo.ok) {
-      console.error("❌ Error al enviar correo:", resultadoCorreo.error);
-    }
 
-    // 5. OK
-    res.status(200).json({ ok: true });
-
-    // 6. Registrar tokens
-    try {
-      const { prompt_tokens, completion_tokens, total_tokens } = completion.usage;
-      await fetch(API_TOKENS, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fecha: new Date().toISOString(),
-          usuario,
-          institucion: tipoInstitucion,
-          inputTokens: prompt_tokens,
-          outputTokens: completion_tokens,
-          totalTokens: total_tokens,
-          costoUSD: (total_tokens / 1000 * 0.01).toFixed(4)
-        })
+    const envJson = await enviar.json().catch(() => ({}));
+    if (!enviar.ok || !envJson?.ok) {
+      return res.status(200).json({
+        ok: false,
+        stage: "SENDMAIL",
+        error: envJson?.error || "Fallo al enviar correo",
+        detail: { tipo, email: email||"", codigo: codigo||"", correoUsuario }
       });
-    } catch (error) {
-      console.error("⚠️ Error al registrar tokens:", error.message);
     }
+
+    // OK
+    return res.status(200).json({ ok: true });
 
   } catch (err) {
     console.error("🔥 Error en analizar-test.js:", err);
     return res.status(500).json({ ok: false, error: "Error interno en analizar-test" });
   }
 }
+
