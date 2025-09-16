@@ -7,15 +7,19 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Método no permitido" });
 
-  // ===== Config (con soporte para variables de entorno) =====
-  const GAS_RESP_URL       = process.env.OBTENER_RESPUESTAS_TEST_URL
+  // === Config (usa env vars si existen) ===
+  const GAS_RESP_URL    = process.env.OBTENER_RESPUESTAS_TEST_URL
     || "https://script.google.com/macros/s/AKfycbwl84s-LVDjI__QT7V1NE4qX8a1Mew18yTQDe0M3EGnGpvGlckkrazUgZ1YYLS3xI_I9w/exec";
-  const GAS_VERUSER_URL    = process.env.VERIFICAR_CODIGO_Y_USUARIO_URL
+  const GAS_VERUSER_URL = process.env.VERIFICAR_CODIGO_Y_USUARIO_URL
     || "https://script.google.com/macros/s/AKfycbxfzxX_s97kIU4qv6M0dcaNrPIRxGDqECpd-uvoi5BDPVaIOY5ybWiVFiwqUss81Y-oNQ/exec";
-  const API_ENVIAR_CORREO  = process.env.API_ENVIAR_CORREO
+  const API_ENVIAR_CORREO = process.env.API_ENVIAR_CORREO
     || "https://aurea-backend-two.vercel.app/api/enviar-correo";
+  const LICENCIAS_URL = process.env.LICENCIAS_URL
+    || "https://script.google.com/macros/s/AKfycbzvlZIbTZEBR03VwnDyYdoX3WXFe8cd0zKsR4W-SxxJqozo4ek9wYyIbtEJKNznV10VJg/exec";
 
-  // ===== Utils =====
+  const ATTEMPT_TIMEOUT_MS = 12000;
+
+  // === Utils ===
   const normTipo = (t) => String(t || "").trim().toLowerCase();
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   const inval = (v) => {
@@ -23,28 +27,22 @@ export default async function handler(req, res) {
     return s === "" || s === "none" || s === "null" || s === "undefined" || s === "n/a";
   };
 
-  async function fetchWithTimeout(url, opts = {}, ms = 15000, label = "fetch") {
-    const c = new AbortController();
-    const id = setTimeout(() => c.abort(), ms);
+  async function postJSON(url, data, timeoutMs = ATTEMPT_TIMEOUT_MS, label = "postJSON") {
+    const ctrl = new AbortController();
+    const id = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-      const r = await fetch(url, { ...opts, signal: c.signal });
-      return r;
-    } catch (e) {
-      throw new Error(`Timeout/Abort ${label} tras ${ms}ms: ${e?.message || e}`);
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/json" },
+        body: JSON.stringify(data || {}),
+        signal: ctrl.signal
+      });
+      const text = await r.text();
+      let j = null; try { j = JSON.parse(text); } catch (_) {}
+      return { ok: r.ok, j, text, status: r.status, label };
     } finally {
       clearTimeout(id);
     }
-  }
-
-  async function postJSON(url, data, timeoutMs = 15000, label = "postJSON") {
-    const r = await fetchWithTimeout(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data || {})
-    }, timeoutMs, label);
-    const text = await r.text();
-    let j = null; try { j = JSON.parse(text); } catch (_) {}
-    return { ok: r.ok, j, text, status: r.status };
   }
 
   try {
@@ -57,7 +55,7 @@ export default async function handler(req, res) {
     async function obtenerFila() {
       const payload = { tipoInstitucion: tipo };
       if (email) payload.email = String(email).toLowerCase();
-      return await postJSON(GAS_RESP_URL, payload, 15000, "GAS_RESP_URL");
+      return await postJSON(GAS_RESP_URL, payload, ATTEMPT_TIMEOUT_MS, "GAS_RESP_URL");
     }
 
     let g = await obtenerFila();
@@ -75,6 +73,7 @@ export default async function handler(req, res) {
       }
     }
 
+    // Datos de la fila obtenida
     const correoUsuario = String(g.j.usuario || "").toLowerCase();
     let nombre = g.j.nombre || "";
     const sexo = g.j.sexo || "";
@@ -85,13 +84,41 @@ export default async function handler(req, res) {
     // 2) Intentar enriquecer nombre desde Usuarios (si no vino)
     if (!nombre && correoUsuario) {
       try {
-        const r = await postJSON(GAS_VERUSER_URL, { correo: correoUsuario, codigo: codigo || "" }, 12000, "GAS_VERUSER_URL");
+        const r = await postJSON(GAS_VERUSER_URL, { correo: correoUsuario, codigo: codigo || "" }, ATTEMPT_TIMEOUT_MS, "GAS_VERUSER_URL");
         const usr = r?.j?.usuario;
         if (usr && (usr.nombre || usr.apellido)) {
           nombre = [usr.nombre || "", usr.apellido || ""].join(" ").trim();
         }
       } catch (_) { /* noop */ }
       if (!nombre) nombre = correoUsuario.split("@")[0];
+    }
+
+    // 2.1) 🔐 Consumir licencia SOLO si el usuario NO estaba registrado (evita sumar por teclear código sin terminar)
+    try {
+      if (correoUsuario && codigo) {
+        const verResp = await postJSON(
+          GAS_VERUSER_URL,
+          { correo: correoUsuario, codigo: codigo || "" },
+          ATTEMPT_TIMEOUT_MS,
+          "GAS_VERUSER_URL(check)"
+        );
+        const esNuevo = verResp?.j?.yaRegistrado === false;
+        if (esNuevo) {
+          const lic = await postJSON(
+            LICENCIAS_URL,
+            { codigo: String(codigo).toUpperCase(), yaRegistrado: false, intencionRegistro: true },
+            ATTEMPT_TIMEOUT_MS,
+            "LICENCIAS_URL(consumir)"
+          );
+          // Si Licencias dice "no acceso" (sin cupo), preferimos no bloquear el análisis por ahora:
+          // registramos y seguimos para no romper la UX. Si quieres BLOQUEAR, cambia a "return res.status(200).json({ ok:false, stage:'LICENCIAS', ... })"
+          if (!lic?.ok || lic?.j?.acceso !== true) {
+            console.warn("⚠️ No se pudo consumir licencia:", lic?.j || lic?.text || lic?.status);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("⚠️ Error al consumir licencia:", e?.message || e);
     }
 
     // 3) PROMPT — INTACTO (no modificar)
@@ -137,7 +164,7 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
 `.trim();
 
     async function pedirOpenAI() {
-      const r = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
+      const r = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
         body: JSON.stringify({
@@ -146,7 +173,7 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
           temperature: 0.7,
           max_tokens: 800
         })
-      }, 25000, "OpenAI");
+      });
       const j = await r.json();
       const content = j?.choices?.[0]?.message?.content || "";
       let out;
@@ -170,7 +197,6 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
     }
 
     if (!resultado) {
-      // No hay perfil válido → Wix reportará error
       return res.status(200).json({
         ok: false,
         stage: "OPENAI",
@@ -186,7 +212,7 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
       "alfredo@positronconsulting.com"
     ].filter(Boolean);
 
-    const enviar = await fetchWithTimeout(API_ENVIAR_CORREO, {
+    const enviar = await fetch(API_ENVIAR_CORREO, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -199,12 +225,12 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
         correoSOS: correoSOS || "",
 
         // ✅ Garantía explícita de destinatarios:
-        to: [correoUsuario],                                  // usuario
-        cc: destinatarios.filter(d => d !== correoUsuario),   // cc correoSOS + Alfredo
-        bcc: [],                                              // opcional
-        extraDestinatarios: destinatarios                     // en caso de que tu API espere este campo
+        to: [correoUsuario],                                   // usuario
+        cc: destinatarios.filter(d => d !== correoUsuario),    // cc correoSOS + Alfredo
+        bcc: [],                                               // opcional
+        extraDestinatarios: destinatarios                      // por si tu API usa este campo
       })
-    }, 15000, "API_ENVIAR_CORREO");
+    });
 
     const envJson = await enviar.json().catch(() => ({}));
     if (!enviar.ok || !envJson?.ok) {
@@ -224,5 +250,3 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
     return res.status(500).json({ ok: false, error: "Error interno en analizar-test" });
   }
 }
-
-
