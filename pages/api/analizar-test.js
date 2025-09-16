@@ -33,7 +33,7 @@ export default async function handler(req, res) {
     const { tipoInstitucion, email, correoSOS, codigo } = req.body || {};
     if (!tipoInstitucion) return res.status(400).json({ ok:false, error: "tipoInstitucion requerido" });
 
-    const GAS_RESP_URL    = "https://script.google.com/macros/s/AKfycbwl84s-LVDjI__QT7V1NE4qv8a1Mew18yTQDe0M3EGnGpvGlckkrazUgZ1YYLS3xI_I9w/exec".replace('v8a','v8a'); // (igual)
+    const GAS_RESP_URL    = "https://script.google.com/macros/s/AKfycbwOlx381TjxulLqMS0sSfgmqoQjWf_XopINzbuxy3zNw5EMXkKaO9CYGrYdyrh5iOi1ig/exec".replace('v8a','v8a'); // (igual)
     const GAS_VERUSER_URL = "https://script.google.com/macros/s/AKfycbxfzxX_s97kIU4qv6M0dcaNrPIRxGDqECpd-uvoi5BDPVaIOY5ybWiVFiwqUss81Y-oNQ/exec";
     const API_ENVIAR_CORREO = "https://aurea-backend-two.vercel.app/api/enviar-correo";
 
