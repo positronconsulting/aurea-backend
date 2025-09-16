@@ -7,38 +7,57 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Método no permitido" });
 
+  // ===== Config (con soporte para variables de entorno) =====
+  const GAS_RESP_URL       = process.env.OBTENER_RESPUESTAS_TEST_URL
+    || "https://script.google.com/macros/s/AKfycbwl84s-LVDjI__QT7V1NE4qX8a1Mew18yTQDe0M3EGnGpvGlckkrazUgZ1YYLS3xI_I9w/exec";
+  const GAS_VERUSER_URL    = process.env.VERIFICAR_CODIGO_Y_USUARIO_URL
+    || "https://script.google.com/macros/s/AKfycbxfzxX_s97kIU4qv6M0dcaNrPIRxGDqECpd-uvoi5BDPVaIOY5ybWiVFiwqUss81Y-oNQ/exec";
+  const API_ENVIAR_CORREO  = process.env.API_ENVIAR_CORREO
+    || "https://aurea-backend-two.vercel.app/api/enviar-correo";
+
+  // ===== Utils =====
+  const normTipo = (t) => String(t || "").trim().toLowerCase();
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  const inval = (v) => {
+    const s = (v == null ? "" : String(v)).trim().toLowerCase();
+    return s === "" || s === "none" || s === "null" || s === "undefined" || s === "n/a";
+  };
+
+  async function fetchWithTimeout(url, opts = {}, ms = 15000, label = "fetch") {
+    const c = new AbortController();
+    const id = setTimeout(() => c.abort(), ms);
+    try {
+      const r = await fetch(url, { ...opts, signal: c.signal });
+      return r;
+    } catch (e) {
+      throw new Error(`Timeout/Abort ${label} tras ${ms}ms: ${e?.message || e}`);
+    } finally {
+      clearTimeout(id);
+    }
+  }
+
+  async function postJSON(url, data, timeoutMs = 15000, label = "postJSON") {
+    const r = await fetchWithTimeout(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data || {})
+    }, timeoutMs, label);
+    const text = await r.text();
+    let j = null; try { j = JSON.parse(text); } catch (_) {}
+    return { ok: r.ok, j, text, status: r.status };
+  }
+
   try {
     const { tipoInstitucion, email, correoSOS, codigo } = req.body || {};
-    if (!tipoInstitucion) return res.status(400).json({ ok:false, error: "tipoInstitucion requerido" });
+    if (!tipoInstitucion) return res.status(400).json({ ok: false, error: "tipoInstitucion requerido" });
 
-    const GAS_RESP_URL    = "https://script.google.com/macros/s/AKfycbwl84s-LVDjI__QT7V1NE4qX8a1Mew18yTQDe0M3EGnGpvGlckkrazUgZ1YYLS3xI_I9w/exec";
-    const GAS_VERUSER_URL = "https://script.google.com/macros/s/AKfycbxfzxX_s97kIU4qv6M0dcaNrPIRxGDqECpd-uvoi5BDPVaIOY5ybWiVFiwqUss81Y-oNQ/exec";
-    const API_ENVIAR_CORREO = "https://aurea-backend-two.vercel.app/api/enviar-correo";
-
-    const normTipo = (t) => String(t||"").trim().toLowerCase();
     const tipo = normTipo(tipoInstitucion);
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-    const inval = (v) => {
-      const s = (v==null ? "" : String(v)).trim().toLowerCase();
-      return s === "" || s === "none" || s === "null" || s === "undefined" || s === "n/a";
-    };
-
-    async function postJSON(url, data) {
-      const r = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data || {})
-      });
-      const text = await r.text();
-      let j=null; try{ j=JSON.parse(text); } catch(_){}
-      return { ok: r.ok, j, text, status: r.status };
-    }
 
     // 1) GAS: obtener fila (por email si viene; si no, primer pendiente)
     async function obtenerFila() {
       const payload = { tipoInstitucion: tipo };
       if (email) payload.email = String(email).toLowerCase();
-      return await postJSON(GAS_RESP_URL, payload);
+      return await postJSON(GAS_RESP_URL, payload, 15000, "GAS_RESP_URL");
     }
 
     let g = await obtenerFila();
@@ -66,18 +85,18 @@ export default async function handler(req, res) {
     // 2) Intentar enriquecer nombre desde Usuarios (si no vino)
     if (!nombre && correoUsuario) {
       try {
-        const r = await postJSON(GAS_VERUSER_URL, { correo: correoUsuario, codigo: codigo || "" });
+        const r = await postJSON(GAS_VERUSER_URL, { correo: correoUsuario, codigo: codigo || "" }, 12000, "GAS_VERUSER_URL");
         const usr = r?.j?.usuario;
         if (usr && (usr.nombre || usr.apellido)) {
-          nombre = [usr.nombre||"", usr.apellido||""].join(" ").trim();
+          nombre = [usr.nombre || "", usr.apellido || ""].join(" ").trim();
         }
-      } catch(_) { /* noop */ }
+      } catch (_) { /* noop */ }
       if (!nombre) nombre = correoUsuario.split("@")[0];
     }
 
     // 3) PROMPT — INTACTO (no modificar)
     const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) return res.status(500).json({ ok:false, error:"Falta OPENAI_API_KEY" });
+    if (!apiKey) return res.status(500).json({ ok: false, error: "Falta OPENAI_API_KEY" });
 
     const prompt = `
 Eres AUREA, la mejor psicóloga del mundo, con entrenamiento clínico avanzado en psicometría, salud mental y análisis emocional. Acabas de aplicar un test inicial a ${nombre}, de genero ${sexo} y con fecha de nacimiento ${fechaNacimiento}, quien respondió una serie de reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre diversos temas emocionales.
@@ -118,7 +137,7 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
 `.trim();
 
     async function pedirOpenAI() {
-      const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      const r = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
         body: JSON.stringify({
@@ -127,7 +146,7 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
           temperature: 0.7,
           max_tokens: 800
         })
-      });
+      }, 25000, "OpenAI");
       const j = await r.json();
       const content = j?.choices?.[0]?.message?.content || "";
       let out;
@@ -156,7 +175,7 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
         ok: false,
         stage: "OPENAI",
         error: "Perfil vacío/None/corto tras reintento",
-        detail: { tipo, email: email||"", codigo: codigo||"", correoUsuario }
+        detail: { tipo, email: email || "", codigo: codigo || "", correoUsuario }
       });
     }
 
@@ -167,7 +186,7 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
       "alfredo@positronconsulting.com"
     ].filter(Boolean);
 
-    const enviar = await fetch(API_ENVIAR_CORREO, {
+    const enviar = await fetchWithTimeout(API_ENVIAR_CORREO, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -180,13 +199,12 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
         correoSOS: correoSOS || "",
 
         // ✅ Garantía explícita de destinatarios:
-        to: [correoUsuario],                 // usuario
-        cc: destinatarios.filter(d => d !== correoUsuario), // cc correoSOS + Alfredo
-        // Si tu API soporta bcc o un campo genérico, lo incluimos también:
-        bcc: [], // opcional
-        extraDestinatarios: destinatarios    // en caso de que tu API espere este campo
+        to: [correoUsuario],                                  // usuario
+        cc: destinatarios.filter(d => d !== correoUsuario),   // cc correoSOS + Alfredo
+        bcc: [],                                              // opcional
+        extraDestinatarios: destinatarios                     // en caso de que tu API espere este campo
       })
-    });
+    }, 15000, "API_ENVIAR_CORREO");
 
     const envJson = await enviar.json().catch(() => ({}));
     if (!enviar.ok || !envJson?.ok) {
@@ -194,7 +212,7 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
         ok: false,
         stage: "SENDMAIL",
         error: envJson?.error || "Fallo al enviar correo",
-        detail: { tipo, email: email||"", codigo: codigo||"", correoUsuario }
+        detail: { tipo, email: email || "", codigo: codigo || "", correoUsuario }
       });
     }
 
