@@ -1,6 +1,5 @@
 // pages/api/cache/verificar-usuario.js
-// Proxy con caché en memoria a GAS_VER_URL para (correo, codigo).
-// Shape de salida: el MISMO que devuelve GAS, transparente para Wix.
+// Proxy con caché a GAS_VER_URL para (correo, codigo) + CORS + timeout
 
 const GAS_VER_URL = 'https://script.google.com/macros/s/AKfycbxfzxX_s97kIU4qv6M0dcaNrPIRxGDqECpd-uvoi5BDPVaIOY5ybWiVFiwqUss81Y-oNQ/exec';
 
@@ -10,7 +9,7 @@ const TTL_MS = 60 * 1000; // 60s
 function key(correo, codigo){ return `${correo.toLowerCase()}::${codigo.toUpperCase()}`; }
 function now(){ return Date.now(); }
 
-async function fetchJSON(url, body, timeoutMs = 8000) {
+async function fetchJSON(url, body, timeoutMs = 9000) {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort('timeout'), timeoutMs);
   try {
@@ -31,11 +30,16 @@ async function fetchJSON(url, body, timeoutMs = 8000) {
 }
 
 export default async function handler(req, res) {
+  // 🔐 CORS
+  res.setHeader('Access-Control-Allow-Origin', 'https://www.positronconsulting.com'); // o '*'
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ ok:false, acceso:false, motivo:'Method not allowed' });
 
   const correo = String(req.body?.correo || '').trim().toLowerCase();
   const codigo = String(req.body?.codigo || '').trim().toUpperCase();
-  if (!correo || !codigo) return res.status(400).json({ ok:false, acceso:false, motivo:'Correo y código requeridos' });
+  if (!correo || !codigo) return res.status(200).json({ ok:false, acceso:false, motivo:'Correo y código requeridos' });
 
   const k = key(correo, codigo);
   const cached = userCache.get(k);
@@ -49,8 +53,8 @@ export default async function handler(req, res) {
     return res.status(200).json({ ok:false, acceso:false, motivo:`Fallo verificación (${r.status})`, error:r.text || '' });
   }
 
-  // Guarda en caché corto
   userCache.set(k, { data: r.json, exp: now() + TTL_MS });
   res.setHeader('AUREA-Cache', 'MISS');
   return res.status(200).json(r.json);
 }
+

@@ -1,5 +1,5 @@
 // pages/api/cache/verificar-codigo.js
-// Valida un código institucional con caché, forwarding a Licencias GAS.
+// Valida código contra LICENCIAS_URL con caché + CORS + timeout
 
 const LICENCIAS_URL = 'https://script.google.com/macros/s/AKfycbzvlZIbTZEBR03VwnDyYdoX3WXFe8cd0zKsR4W-SxxJqozo4ek9wYyIbtEJKNznV10VJg/exec';
 
@@ -8,7 +8,7 @@ const TTL_MS = 5 * 60 * 1000; // 5 min
 
 function now(){ return Date.now(); }
 
-async function fetchJSON(url, body, timeoutMs = 8000) {
+async function fetchJSON(url, body, timeoutMs = 9000) {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort('timeout'), timeoutMs);
   try {
@@ -29,10 +29,15 @@ async function fetchJSON(url, body, timeoutMs = 8000) {
 }
 
 export default async function handler(req, res) {
+  // 🔐 CORS
+  res.setHeader('Access-Control-Allow-Origin', 'https://www.positronconsulting.com'); // o '*'
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ ok:false, motivo:'Method not allowed' });
 
   const codigo = String(req.body?.codigo || '').trim().toUpperCase();
-  if (!codigo) return res.status(400).json({ ok:false, motivo:'Código vacío o inválido' });
+  if (!codigo) return res.status(200).json({ ok:false, motivo:'Código vacío o inválido' });
 
   const cached = codeCache.get(codigo);
   if (cached && cached.exp > now()) {
@@ -53,3 +58,4 @@ export default async function handler(req, res) {
   res.setHeader('AUREA-Cache', 'MISS');
   return res.status(200).json(data);
 }
+
