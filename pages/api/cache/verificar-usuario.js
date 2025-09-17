@@ -1,7 +1,7 @@
 // pages/api/cache/verificar-usuario.js
 // Proxy con caché a GAS_VER_URL para (correo, codigo) + CORS + timeout
 
-const GAS_VER_URL = 'https://script.google.com/macros/s/AKfycbxfzxX_s97kIU4qv6M0dcaNrPIRxGDqECpd-uvoi5BDPVaIOY5ybWiVFiwqUss81Y-oNQ/exec';
+const GAS_VER_URL = 'https://script.google.com/macros/s/AKfycbwjm2DGC8Q_MJ3KwWWF1GupLu6lX7g_9kylrUk_OAzjYUSls4Esvg0FXoxKv7ya3miIYA/exec';
 
 const userCache = new Map(); // key -> { data, exp }
 const TTL_MS = 60 * 1000; // 60s
