@@ -218,4 +218,3 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
     return res.status(500).json({ ok: false, error: "Error interno en analizar-test" });
   }
 }
-
