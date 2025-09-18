@@ -1,5 +1,5 @@
 // pages/api/worker/analizar.js
-import { Receiver } from "@upstash/qstash/nodejs";
+import { Receiver } from "@upstash/qstash/nextjs";
 
 export const config = { api: { bodyParser: false } };
 
