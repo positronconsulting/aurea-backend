@@ -1,12 +1,26 @@
-// ✅ pages/api/analizar-test.js (Vercel)
-// CORS básico + reintentos a GAS. Prompt intacto.
-
+// pages/api/analizar-test.js
 export default async function handler(req, res) {
+  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-Internal-Token");
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ ok: false, error: "Método no permitido" });
+
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return res.status(405).json({ ok:false, error:"Method Not Allowed" });
+  }
+
+  // 🔐 Token interno (lo envía el worker)
+  const expected = process.env.AUREA_INTERNAL_TOKEN || "";
+  const got = String(req.headers["x-internal-token"] || "");
+  if (!expected || got !== expected) {
+    return res.status(401).json({ ok:false, error:"Unauthorized" });
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
+  //                       TU LÓGICA ACTUAL (INTACTA)
+  // ────────────────────────────────────────────────────────────────────────────
 
   // 🔗 ENDPOINTS
   const GAS_RESP_URL     = "https://script.google.com/macros/s/AKfycbwOlx381TjxulLqMS0sSfgmqoQjWf_XopINzbuxy3zNw5EMXkKaO9CYGrYdyrh5iOi1ig/exec";
@@ -19,7 +33,6 @@ export default async function handler(req, res) {
     return s === "" || s === "none" || s === "null" || s === "undefined" || s === "n/a";
   };
 
-  // POST JSON con timeout
   async function postJSON(url, data, ms = 12000) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
@@ -48,18 +61,18 @@ export default async function handler(req, res) {
     const normTipo = (t) => String(t||"").trim().toLowerCase();
     const tipo = normTipo(tipoInstitucion);
 
-    // 1) GAS: obtener fila (por email si viene; si no, primer pendiente) — con reintentos
+    // 1) GAS: obtener fila pendiente (o por email) con reintentos
     async function obtenerFila() {
       const payload = { tipoInstitucion: tipo };
       if (email) payload.email = String(email).toLowerCase();
-      const backoffs = [0, 1500, 3000]; // 3 intentos
+      const backoffs = [0, 1500, 3000];
       let last = null;
       for (let i=0;i<backoffs.length;i++){
         if (backoffs[i]) await sleep(backoffs[i]);
         last = await postJSON(GAS_RESP_URL, payload, 12000);
         if (last?.j?.ok) return last;
       }
-      return last; // devuelve el último para diagnóstico
+      return last;
     }
 
     const g = await obtenerFila();
@@ -79,7 +92,7 @@ export default async function handler(req, res) {
     const respuestas = g.j.respuestas || {};
     const comentarioLibre = inval(g.j.info) ? "" : String(g.j.info).trim();
 
-    // 2) Intentar enriquecer nombre desde Usuarios (si no vino)
+    // 2) Enriquecer nombre desde Usuarios (si falta)
     if (!nombre && correoUsuario) {
       try {
         const r = await postJSON(GAS_VERUSER_URL, { correo: correoUsuario, codigo: codigo || "" }, 10000);
@@ -87,11 +100,11 @@ export default async function handler(req, res) {
         if (usr && (usr.nombre || usr.apellido)) {
           nombre = [usr.nombre||"", usr.apellido||""].join(" ").trim();
         }
-      } catch(_) { /* noop */ }
+      } catch(_) {}
       if (!nombre) nombre = correoUsuario.split("@")[0];
     }
 
-    // 3) PROMPT — INTACTO (no modificar)
+    // 3) PROMPT (intacto)
     const prompt = `
 Eres AUREA, la mejor psicóloga del mundo, con entrenamiento clínico avanzado en psicometría, salud mental y análisis emocional. Acabas de aplicar un test inicial a ${nombre}, de genero ${sexo} y con fecha de nacimiento ${fechaNacimiento}, quien respondió una serie de reactivos tipo Likert ("Nunca", "Casi nunca", "A veces", "Casi siempre", "Siempre") sobre diversos temas emocionales.
 
@@ -151,7 +164,7 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
 
     const validoPerfil = (s) => !inval(s) && String(s).trim().length >= 50;
 
-    // 4) OpenAI con validación fuerte y reintento
+    // 4) OpenAI con validación/reintento
     let intento = 0, maxIntentos = 2, resultado;
     while (intento < maxIntentos) {
       const { out } = await pedirOpenAI();
@@ -172,7 +185,7 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
       });
     }
 
-    // 5) Enviar correo (Usuario + correoSOS + Alfredo SIEMPRE) con reintento corto
+    // 5) Enviar correo (usuario + SOS + Alfredo)
     const destinatarios = [
       correoUsuario,
       (correoSOS || "").trim(),
@@ -180,7 +193,6 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
     ].filter(Boolean);
 
     async function enviarCorreo(payload) {
-      // 2 intentos: 8s y 8s
       for (let i=0;i<2;i++){
         const r = await postJSON(API_ENVIAR_CORREO, payload, 8000);
         if (r?.okHTTP && r?.j?.ok) return { ok: true };
