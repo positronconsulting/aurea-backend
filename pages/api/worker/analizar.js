@@ -12,7 +12,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1) Firma QStash
+    // 1) Verificar firma QStash
     const current = (process.env.QSTASH_CURRENT_SIGNING_KEY || "").trim();
     const next    = (process.env.QSTASH_NEXT_SIGNING_KEY || "").trim();
     if (!current || !next) {
@@ -29,10 +29,10 @@ export default async function handler(req, res) {
     let payload = {};
     try { payload = JSON.parse(body || "{}"); } catch { payload = {}; }
 
-    // 3) Destino: **fijo a producción** para evitar “preview env” sin token
+    // 3) Destino fijo a prod (evita previews sin vars)
     const target = "https://aurea-backend-two.vercel.app/api/analizar-test";
 
-    // 4) Token interno (desde env)
+    // 4) Token interno (UNA sola variante en minúsculas)
     const internalToken = (process.env.AUREA_INTERNAL_TOKEN || "").trim();
 
     // Logs
@@ -41,13 +41,12 @@ export default async function handler(req, res) {
     console.log("[worker] bodyLen:", (body || "").length);
     console.log("[worker] payload keys:", Object.keys(payload));
 
-    // 5) Reenvío con encabezado en mayúsc/minúsc (por si alguna capa normaliza)
+    // 5) Reenvío
     const r = await fetch(target, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
-        "X-Internal-Token": internalToken,
-        "x-internal-token": internalToken,
+        "content-type": "application/json",
+        "x-internal-token": internalToken, // <-- SOLO una vez
       },
       body: JSON.stringify(payload),
     });
