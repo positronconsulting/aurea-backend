@@ -1,17 +1,7 @@
 // pages/api/worker/analizar.js
-import { Receiver } from "@upstash/qstash/nextjs";
+import { verifySignature } from "@upstash/qstash/nextjs";
 
 export const config = { api: { bodyParser: false } };
-
-function readRawBody(req) {
-  return new Promise((resolve, reject) => {
-    let data = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk) => (data += chunk));
-    req.on("end", () => resolve(data));
-    req.on("error", reject);
-  });
-}
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -26,24 +16,19 @@ export default async function handler(req, res) {
       return res.status(500).json({ ok: false, error: "QStash signing keys missing" });
     }
 
-    const receiver = new Receiver({ currentSigningKey: current, nextSigningKey: next });
+    // ✅ Verifica firma y obtén el body crudo
+    const { body } = await verifySignature({
+      req,
+      currentSigningKey: current,
+      nextSigningKey: next,
+    });
 
-    const signature = req.headers["upstash-signature"];
-    if (!signature) {
-      return res.status(401).json({ ok: false, error: "Missing Upstash-Signature" });
-    }
+    const payload = JSON.parse(body || "{}");
 
-    const raw = await readRawBody(req);
-
-    // Verifica firma (throws si no coincide)
-    await receiver.verify({ signature, body: raw });
-
-    // Parseamos el payload ya verificado
-    const payload = JSON.parse(raw || "{}");
-
-    // Reenvía al endpoint existente de tu sistema (analizar-test)
-    const base =
-      process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000";
+    // Reenvía al endpoint existente (analizar-test)
+    const base = process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : "http://localhost:3000";
     const target = `${base}/api/analizar-test`;
 
     const r = await fetch(target, {
@@ -54,9 +39,8 @@ export default async function handler(req, res) {
 
     const text = await r.text();
     let json = null;
-    try { json = JSON.parse(text); } catch (_) {}
+    try { json = JSON.parse(text); } catch {}
 
-    // Si tu /api/analizar-test devuelve 2xx, QStash lo considera deliverado
     if (!r.ok) {
       return res.status(r.status).json({ ok: false, error: text || "Downstream error" });
     }
@@ -64,7 +48,6 @@ export default async function handler(req, res) {
     return res.status(200).json(json || { ok: true });
   } catch (err) {
     console.error("worker/analizar error:", err);
-    // 500 => QStash reintentará con backoff
     return res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
 }
