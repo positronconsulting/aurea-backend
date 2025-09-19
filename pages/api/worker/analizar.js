@@ -3,7 +3,6 @@ import { verifySignature } from "@upstash/qstash/nextjs";
 
 export const config = { api: { bodyParser: false } };
 
-// máscara simple para logs
 const mask = (s) => (s ? `${String(s).slice(0,4)}…(len:${String(s).length})` : "MISSING");
 
 export default async function handler(req, res) {
@@ -13,9 +12,9 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1) Verificar firma de QStash y obtener body
-    const current = process.env.QSTASH_CURRENT_SIGNING_KEY;
-    const next = process.env.QSTASH_NEXT_SIGNING_KEY;
+    // 1) Firma QStash
+    const current = (process.env.QSTASH_CURRENT_SIGNING_KEY || "").trim();
+    const next    = (process.env.QSTASH_NEXT_SIGNING_KEY || "").trim();
     if (!current || !next) {
       return res.status(500).json({ ok: false, error: "QStash signing keys missing" });
     }
@@ -26,28 +25,29 @@ export default async function handler(req, res) {
       nextSigningKey: next,
     });
 
+    // 2) Payload
     let payload = {};
     try { payload = JSON.parse(body || "{}"); } catch { payload = {}; }
 
-    // 2) Construir destino interno
-    const base = process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : "http://localhost:3000";
-    const target = `${base}/api/analizar-test`;
+    // 3) Destino: **fijo a producción** para evitar “preview env” sin token
+    const target = "https://aurea-backend-two.vercel.app/api/analizar-test";
 
+    // 4) Token interno (desde env)
     const internalToken = (process.env.AUREA_INTERNAL_TOKEN || "").trim();
 
-    // Logs útiles (no exponen secretos completos)
+    // Logs
     console.log("[worker] target:", target);
     console.log("[worker] AUREA_INTERNAL_TOKEN:", mask(internalToken));
+    console.log("[worker] bodyLen:", (body || "").length);
     console.log("[worker] payload keys:", Object.keys(payload));
 
-    // 3) Forward: añade X-Internal-Token
+    // 5) Reenvío con encabezado en mayúsc/minúsc (por si alguna capa normaliza)
     const r = await fetch(target, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Internal-Token": internalToken,
+        "x-internal-token": internalToken,
       },
       body: JSON.stringify(payload),
     });
@@ -58,15 +58,12 @@ export default async function handler(req, res) {
     console.log("[worker] downstream status:", r.status);
 
     if (!r.ok) {
-      // Propaga status de downstream para que QStash reintente si procede
       return res.status(r.status).json({ ok: false, error: text || "Downstream error" });
     }
 
     return res.status(200).json(json || { ok: true });
   } catch (err) {
     console.error("worker/analizar error:", err);
-    // 500 => QStash reintentará con backoff
     return res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
 }
-
