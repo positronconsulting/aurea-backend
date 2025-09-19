@@ -70,7 +70,15 @@ export default async function handler(req, res) {
 
     // 1) GAS: obtener fila pendiente (o por email) con reintentos
     async function obtenerFila() {
-      const payload = { tipoInstitucion: tipo };
+      const payload = {
+        tipoInstitucion,
+        email,
+        correoSOS,
+        codigo,
+        jobId: `${email}-${Date.now()}`,           // 👈 trazabilidad
+        requestedAt: new Date().toISOString()      // 👈 auditoría
+      };
+
       if (email) payload.email = String(email).toLowerCase();
       const backoffs = [0, 1500, 3000];
       let last = null;
@@ -201,7 +209,7 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
 
     async function enviarCorreo(payload) {
       for (let i=0;i<2;i++){
-        const r = await postJSON(API_ENVIAR_CORREO, payload, 8000);
+        const r = await postJSON(API_ENVIAR_CORREO, payload, 12000);
         if (r?.okHTTP && r?.j?.ok) return { ok: true };
         await sleep(800);
       }
