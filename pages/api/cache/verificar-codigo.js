@@ -1,11 +1,12 @@
 // pages/api/cache/verificar-codigo.js
-// KV compartido + TTL 60m + stale-while-revalidate + invalidación admin
+// Upstash (via @vercel/kv) con namespaces + versionado global + SWR + invalidación puntual o total
 
 import { kv } from '@vercel/kv';
 
-const LICENCIAS_URL = 'https://script.google.com/macros/s/AKfycbzvlZIbTZEBR03VwnDyYdoX3WXFe8cd0zKsR4W-SxxJqozo4ek9wYyIbtEJKNznV10VJg/exec'; // <-- tu GAS real
-const TTL_SEC = 60 * 60; // 60 minutos "fresh"
+const LICENCIAS_URL = 'https://script.google.com/macros/s/AKfycbzvlZIbTZEBR03VwnDyYdoX3WXFe8cd0zKsR4W-SxxJqozo4ek9wYyIbtEJKNznV10VJg/exec';
+const TTL_SEC = 60 * 60;                 // 60 min "fresh"
 const ADMIN_KEY = process.env.AUREA_ADMIN_KEY || '';
+const CACHE_VERSION_KEY = 'aurea:cacheVersion';
 
 async function fetchJSON(url, body, timeoutMs = 9000) {
   const ctrl = new AbortController();
@@ -27,11 +28,17 @@ async function fetchJSON(url, body, timeoutMs = 9000) {
   }
 }
 
-function cKey(code){ return `aurea:codigo:${code}`; }
-function sKey(code){ return `aurea:codigo:${code}:staleUntil`; }
+// Helpers de llaves con versionado global
+async function getCacheVersion() {
+  let v = await kv.get(CACHE_VERSION_KEY);
+  if (!v) { v = 1; await kv.set(CACHE_VERSION_KEY, v); }
+  return parseInt(v, 10) || 1;
+}
+function keyFor(version, codigo){ return `aurea:codigo:${version}:${codigo}`; }
+function staleKeyFor(version, codigo){ return `aurea:codigo:${version}:${codigo}:staleUntil`; }
 
 export default async function handler(req, res) {
-  // CORS
+  // CORS solo para tu dominio Wix
   res.setHeader('Access-Control-Allow-Origin', 'https://www.positronconsulting.com');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Admin-Key');
@@ -41,23 +48,37 @@ export default async function handler(req, res) {
   const body = req.body || {};
   const adminKey = req.headers['x-admin-key'] || body.adminKey || '';
 
-  // Invalidación puntual
-  if ((body.invalidate === true || body.invalidate === 'true') && adminKey && adminKey === ADMIN_KEY) {
-    const cod = String(body.codigo || '').trim().toUpperCase();
-    if (!cod) return res.status(200).json({ ok:false, motivo:'Código vacío o inválido' });
-    await kv.del(cKey(cod));
-    await kv.del(sKey(cod));
-    return res.status(200).json({ ok:true, invalidated: cod });
+  // 🔐 Admin: invalidación puntual o total
+  if (adminKey && adminKey === ADMIN_KEY) {
+    const invalidate = (body.invalidate === true || body.invalidate === 'true');
+    const invalidateAll = (body.invalidateAll === true || body.invalidateAll === 'true');
+
+    if (invalidateAll) {
+      const v = await getCacheVersion();
+      await kv.set(CACHE_VERSION_KEY, v + 1); // subir versión global invalida TODO
+      return res.status(200).json({ ok:true, invalidatedAll: true, newVersion: v + 1 });
+    }
+
+    if (invalidate) {
+      const cod = String(body.codigo || '').trim().toUpperCase();
+      if (!cod) return res.status(200).json({ ok:false, motivo:'Código vacío o inválido' });
+      const v = await getCacheVersion();
+      await kv.del(keyFor(v, cod));
+      await kv.del(staleKeyFor(v, cod));
+      return res.status(200).json({ ok:true, invalidated: cod });
+    }
   }
 
+  // Verificación normal
   const codigo = String(body.codigo || '').trim().toUpperCase();
   if (!codigo) return res.status(200).json({ ok:false, motivo:'Código vacío o inválido' });
 
-  const cacheKey = cKey(codigo);
-  const staleKey = sKey(codigo);
   const nowSec = Math.floor(Date.now() / 1000);
+  const v = await getCacheVersion();
+  const cacheKey = keyFor(v, codigo);
+  const staleKey = staleKeyFor(v, codigo);
 
-  // 1) Intento de HIT/STALE
+  // 1) HIT / STALE
   const cached = await kv.get(cacheKey);
   const staleUntil = parseInt((await kv.get(staleKey)) || '0', 10);
 
@@ -66,7 +87,7 @@ export default async function handler(req, res) {
       res.setHeader('AUREA-Cache', 'HIT');
       return res.status(200).json(cached);
     }
-    // STALE: respondo rápido y revalido en background
+    // STALE: responder rápido y revalidar en background
     res.setHeader('AUREA-Cache', 'STALE');
     queueMicrotask(async () => {
       const r = await fetchJSON(LICENCIAS_URL, { codigo, yaRegistrado:false, intencionRegistro:false }, 9000);
@@ -79,7 +100,7 @@ export default async function handler(req, res) {
               correoSOS: r.json.correoSOS || ''
             }
           : { ok:false, motivo: r.json.motivo || 'Acceso no permitido' };
-        await kv.set(cacheKey, data, { ex: TTL_SEC * 2 });   // guarda por 120 min
+        await kv.set(cacheKey, data, { ex: TTL_SEC * 2 });   // 120 min
         await kv.set(staleKey, nowSec + TTL_SEC);            // 60 min fresh
       }
     });
@@ -101,8 +122,8 @@ export default async function handler(req, res) {
       }
     : { ok:false, motivo: r.json.motivo || 'Acceso no permitido' };
 
-  await kv.set(cacheKey, data, { ex: TTL_SEC * 2 }); // 120 min
-  await kv.set(staleKey, nowSec + TTL_SEC);          // 60 min fresh
+  await kv.set(cacheKey, data, { ex: TTL_SEC * 2 });
+  await kv.set(staleKey, nowSec + TTL_SEC);
   res.setHeader('AUREA-Cache', 'MISS');
   return res.status(200).json(data);
 }
