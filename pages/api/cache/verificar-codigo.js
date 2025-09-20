@@ -1,25 +1,41 @@
 // pages/api/cache/verificar-codigo.js
-// Upstash (via @vercel/kv) con namespaces + versionado global + SWR + invalidación puntual o total
+// KV compartido (@vercel/kv) + versionado global + SWR + invalidación puntual/total
+// Maneja el 302 de GAS: POST a /exec → si 302, GET a Location
 
 import { kv } from '@vercel/kv';
 
 const LICENCIAS_URL = 'https://script.google.com/macros/s/AKfycbzvlZIbTZEBR03VwnDyYdoX3WXFe8cd0zKsR4W-SxxJqozo4ek9wYyIbtEJKNznV10VJg/exec';
-const TTL_SEC = 60 * 60;                 // 60 min "fresh"
+const TTL_SEC = 60 * 60; // 60 min "fresh"
 const ADMIN_KEY = process.env.AUREA_ADMIN_KEY || '';
 const CACHE_VERSION_KEY = 'aurea:cacheVersion';
 
-async function fetchJSON(url, body, timeoutMs = 9000) {
+// --- fetch que respeta el flujo de GAS (POST → 302 → GET)
+async function fetchJSON(url, body, timeoutMs = 18000) {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort('timeout'), timeoutMs);
   try {
-    const r = await fetch(url, {
+    // 1) POST al /exec
+    let r = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body || {}),
+      redirect: 'manual',          // no sigas auto
       signal: ctrl.signal
     });
+
+    // 2) Si 301/302/303 → GET a Location (sin body)
+    if ([301,302,303].includes(r.status)) {
+      const loc = r.headers.get('location');
+      if (loc) {
+        r = await fetch(loc, {
+          method: 'GET',
+          signal: ctrl.signal
+        });
+      }
+    }
+
     const text = await r.text();
-    let json = null; try { json = JSON.parse(text); } catch(_){}
+    let json = null; try { json = JSON.parse(text); } catch (_){}
     return { okHTTP: r.ok, status: r.status, text, json };
   } catch (err) {
     return { okHTTP:false, status:0, text:String(err), json:null };
@@ -28,7 +44,7 @@ async function fetchJSON(url, body, timeoutMs = 9000) {
   }
 }
 
-// Helpers de llaves con versionado global
+// --- helpers de caché versionado
 async function getCacheVersion() {
   let v = await kv.get(CACHE_VERSION_KEY);
   if (!v) { v = 1; await kv.set(CACHE_VERSION_KEY, v); }
@@ -38,7 +54,7 @@ function keyFor(version, codigo){ return `aurea:codigo:${version}:${codigo}`; }
 function staleKeyFor(version, codigo){ return `aurea:codigo:${version}:${codigo}:staleUntil`; }
 
 export default async function handler(req, res) {
-  // CORS solo para tu dominio Wix
+  // CORS solo tu dominio
   res.setHeader('Access-Control-Allow-Origin', 'https://www.positronconsulting.com');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Admin-Key');
@@ -55,10 +71,9 @@ export default async function handler(req, res) {
 
     if (invalidateAll) {
       const v = await getCacheVersion();
-      await kv.set(CACHE_VERSION_KEY, v + 1); // subir versión global invalida TODO
+      await kv.set(CACHE_VERSION_KEY, v + 1); // invalida TODO
       return res.status(200).json({ ok:true, invalidatedAll: true, newVersion: v + 1 });
     }
-
     if (invalidate) {
       const cod = String(body.codigo || '').trim().toUpperCase();
       if (!cod) return res.status(200).json({ ok:false, motivo:'Código vacío o inválido' });
@@ -87,10 +102,14 @@ export default async function handler(req, res) {
       res.setHeader('AUREA-Cache', 'HIT');
       return res.status(200).json(cached);
     }
-    // STALE: responder rápido y revalidar en background
+    // STALE → responde rápido y revalida en background
     res.setHeader('AUREA-Cache', 'STALE');
     queueMicrotask(async () => {
-      const r = await fetchJSON(LICENCIAS_URL, { codigo, yaRegistrado:false, intencionRegistro:false }, 9000);
+      let r = await fetchJSON(LICENCIAS_URL, { codigo, yaRegistrado:false, intencionRegistro:false }, 18000);
+      if ((!r.okHTTP || !r.json) && /timeout|aborted/i.test(r.text || '')) {
+        await new Promise(res => setTimeout(res, 200 + Math.floor(Math.random()*300)));
+        r = await fetchJSON(LICENCIAS_URL, { codigo, yaRegistrado:false, intencionRegistro:false }, 18000);
+      }
       if (r.okHTTP && r.json) {
         const data = (r.json.acceso === true)
           ? {
@@ -100,15 +119,19 @@ export default async function handler(req, res) {
               correoSOS: r.json.correoSOS || ''
             }
           : { ok:false, motivo: r.json.motivo || 'Acceso no permitido' };
-        await kv.set(cacheKey, data, { ex: TTL_SEC * 2 });   // 120 min
-        await kv.set(staleKey, nowSec + TTL_SEC);            // 60 min fresh
+        await kv.set(cacheKey, data, { ex: TTL_SEC * 2 });   // 120m
+        await kv.set(staleKey, nowSec + TTL_SEC);            // 60m fresh
       }
     });
     return res.status(200).json(cached);
   }
 
-  // 2) MISS → consulta a GAS y setea caché
-  const r = await fetchJSON(LICENCIAS_URL, { codigo, yaRegistrado:false, intencionRegistro:false }, 9000);
+  // 2) MISS → consulta GAS (con un reintento breve si timeout)
+  let r = await fetchJSON(LICENCIAS_URL, { codigo, yaRegistrado:false, intencionRegistro:false }, 18000);
+  if ((!r.okHTTP || !r.json) && /timeout|aborted/i.test(r.text || '')) {
+    await new Promise(res => setTimeout(res, 200 + Math.floor(Math.random()*300)));
+    r = await fetchJSON(LICENCIAS_URL, { codigo, yaRegistrado:false, intencionRegistro:false }, 18000);
+  }
   if (!r.okHTTP || !r.json) {
     return res.status(200).json({ ok:false, motivo:`Fallo de verificación (${r.status})`, error:r.text || '' });
   }
@@ -127,4 +150,3 @@ export default async function handler(req, res) {
   res.setHeader('AUREA-Cache', 'MISS');
   return res.status(200).json(data);
 }
-
