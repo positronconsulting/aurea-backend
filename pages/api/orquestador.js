@@ -1,9 +1,6 @@
 // pages/api/orquestador.js
 // ======================= AUREA ORQUESTADOR — FINAL =======================
-// CORS fijo, GAS con 'correo', Hedge de OpenAI (dos llamadas en paralelo con timeout),
-// JSON estricto, 11 temas, EMA 60/40 con umbral 60, backups y telemetría.
 
-// ------------------ CORS ------------------
 export default async function handler(req, res) {
   const ORIGIN = process.env.FRONTEND_ORIGIN || 'https://www.positronconsulting.com';
   res.setHeader('Access-Control-Allow-Origin', ORIGIN);
@@ -17,7 +14,7 @@ export default async function handler(req, res) {
   const body = req.body || {};
   const routeLabel = `orq/${action || 'none'}`;
 
-  // ------------------ Helpers base ------------------
+  // ------------------ Helpers ------------------
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
   async function fetchTimeout(url, options = {}, timeoutMs = 12000) {
     const ctrl = new AbortController();
@@ -69,10 +66,11 @@ export default async function handler(req, res) {
   // ------------------ GAS & Email ------------------
   const GAS = {
     VERIFY: process.env.GAS_VERIFY_URL,             // verificarCodigoYUsuario.gs (usa 'correo')
+    VERIFY_MIRROR: process.env.GAS_VERIFY_MIRROR_URL || null, // opcional
     PERFIL: process.env.GAS_PERFIL_URL,             // perfilUsuario.gs (temas E–O + perfil base)
-    UPDATE: process.env.GAS_UPDATE_PROFILE_URL,     // actualizarCalificacion / guardar perfil final
+    UPDATE: process.env.GAS_UPDATE_PROFILE_URL,     // guardarPerfilFinal.gs (nuevo)
     LOGS: process.env.GAS_LOGS_URL,                 // registrarTokens.gs
-    TEMAS: process.env.GAS_TEMAS_URL,               // temasInstitucion (métricas)
+    TEMAS: process.env.GAS_TEMAS_URL,               // métricas (opcional)
     HIST: process.env.GAS_HISTORIAL_URL,            // guardarHistorial (SOS)
     TEL: process.env.GAS_TELEMETRIA_URL             // Telemetria.gs
   };
@@ -116,15 +114,15 @@ export default async function handler(req, res) {
     } catch { return false; }
   }
 
-  // ------------------ Keys de cache ------------------
+  // ------------------ Keys ------------------
   const K_LIC = (codigo) => `lic:${String(codigo || '').toUpperCase()}`;
   const K_USR = (email) => `usr:${String(email || '').toLowerCase()}`;
   const K_TEM = (tipo) => `temas:${String(tipo || '').toLowerCase()}`; // social|empresa|educacion
   const K_BKP = (email) => `bkpperfil:${String(email || '').toLowerCase()}`;
 
-  // ------------------ OpenAI (hedge + JSON estricto) ------------------
+  // ------------------ OpenAI ------------------
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-  const OPENAI_COST = Number(process.env.OPENAI_COST_PER_TOKEN_USD || '0.000005'); // opcional
+  const OPENAI_COST = Number(process.env.OPENAI_COST_PER_TOKEN_USD || '0.000005');
   const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
   const OPENAI_MODEL = 'gpt-4o-mini';
 
@@ -134,31 +132,25 @@ export default async function handler(req, res) {
 Eres AUREA, psicoterapeuta especializado en Terapia Cognitivo Conductual y Neurociencia.
 Debes RESPONDER EXCLUSIVAMENTE en JSON válido con EXACTAMENTE estas claves:
 {
-  "mensajeUsuario": "string",                // máx 100 palabras, profesional, empático PERO que rete (TCC)
-  "temaDetectado": "string",                 // elegir 1 de la lista PERMITIDA o "Otro: <tema>"
-  "porcentaje": 0-100,                       // entero (confianza sobre temaDetectado)
-  "calificacionesPorTema": {                 // mapa con los 11 temas de la institución
-    "<Tema1>": 0-100,
-    "<Tema2>": 0-100
+  "mensajeUsuario": "string",
+  "temaDetectado": "string",
+  "porcentaje": 0-100,
+  "calificacionesPorTema": {
+    "<Tema1>": 0-100
   },
-  "SOS": "OK" | "ALERTA"                     // "ALERTA" si hay riesgo agudo (ideación/plan/intento suicida, daño a terceros, psicosis activa, violencia severa, consumo con riesgo inmediato)
+  "SOS": "OK" | "ALERTA"
 }
-
-Contexto del usuario:
+Contexto:
 - Nombre: ${nombre || 'Usuario'}
 - Mensaje: "${String(mensaje || '').replace(/"/g, '\\"')}"
-
-Temas PERMITIDOS (elige exactamente 1 para "temaDetectado"):
-${lista}
-
-Instrucciones clínicas y de estilo (OBLIGATORIAS):
-- Responde SOLO el JSON sin texto adicional, sin comentarios ni explicaciones fuera del JSON.
-- "mensajeUsuario": tono profesional TCC+Neuro, cálido pero NO complaciente; invita a insight y a un siguiente paso realista SOLO si es necesario.
-- Forzar mapeo a UNO de los temas PERMITIDOS. Si no hay mapeo clínicamente defendible, usar "Otro: <tema>".
-- "calificacionesPorTema": entero 0–100 para CADA uno de los 11 temas PERMITIDOS (0 si no presenta señales).
-- "porcentaje": mejor estimación (entero) de certeza sobre "temaDetectado".
-- "SOS": "ALERTA" ante riesgo agudo (criterios clínicos estándar). En tal caso, el "mensajeUsuario" debe ser más directivo pero con acompañamiento.
-- Mantén precisión clínica; evita clichés, promesas vacías y frases de placebo. Sé claro, directo y respetuoso.
+Temas PERMITIDOS (elige 1): ${lista}
+Instrucciones:
+- Solo JSON; sin texto extra.
+- "mensajeUsuario": ≤100 palabras; TCC+Neuro; empático, NO complaciente; invitar a insight/acción SOLO si es necesario.
+- Forzar mapeo a 1 tema permitido o "Otro: <tema>".
+- "calificacionesPorTema": entero 0–100 para CADA uno de los 11 temas permitidos (0 si no aplica).
+- "porcentaje": certeza sobre el tema detectado (entero).
+- "SOS": "ALERTA" solo ante riesgo agudo.
 `.trim();
   }
 
@@ -184,32 +176,14 @@ Instrucciones clínicas y de estilo (OBLIGATORIAS):
     const costo = usage.total_tokens ? Number((usage.total_tokens * OPENAI_COST).toFixed(6)) : 0;
     return { json, usage, costo };
   }
-
-  // Hedge: dos llamadas en paralelo con timeouts distintos, devolvemos la PRIMERA válida.
+  // Hedge a OpenAI
   async function callOpenAI_Hedge({ prompt }) {
-    // A: baja temperatura (más estable), timeout 9s
     const pA = openAIOnce({ prompt, timeoutMs: 9000, temperature: 0.3 });
-    // B: temperatura 0.5 (por si A tropieza), timeout 12s
     const pB = openAIOnce({ prompt, timeoutMs: 12000, temperature: 0.5 });
-
     return await Promise.any([pA, pB]);
   }
 
-  // ------------------ Utilidades de negocio ------------------
-  function ema6040(actual, nuevo) {
-    const a = Number(actual || 0), n = Math.max(0, Math.min(100, Number(nuevo || 0)));
-    return Math.round(0.6 * a + 0.4 * n);
-  }
-  function normalizarCalifMap(temas, mapa) {
-    const out = {};
-    for (const t of temas) {
-      const v = mapa && Object.prototype.hasOwnProperty.call(mapa, t) ? Number(mapa[t]) : 0;
-      out[t] = Math.max(0, Math.min(100, Number.isFinite(v) ? v : 0));
-    }
-    return out;
-  }
-
-  // ------------------ Temas/Perfil desde GAS_PERFIL_URL ------------------
+  // ------------------ Temas/Perfil ------------------
   async function obtenerTemasYPerfil(tipoInstitucion, correo) {
     const cacheKey = K_TEM(tipoInstitucion);
     let temas = await rGet(cacheKey);
@@ -231,22 +205,34 @@ Instrucciones clínicas y de estilo (OBLIGATORIAS):
     return { temas, perfil: perfil || {} };
   }
 
-  // ------------------ GAS calls ------------------
+  // ------------------ Verificación (hedge a GAS) ------------------
   async function verificarCodigoUsuario({ email, codigo }) {
-    const r = await fetchRetry(GAS.VERIFY, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      // El GAS espera 'correo'
-      body: JSON.stringify({ correo: email, codigo })
-    }, 12000, 1);
-    return r.json();
+    const payload = { correo: email, codigo };
+    const opt = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) };
+    const primary = fetchTimeout(GAS.VERIFY, opt, 14000);
+    const mirror = GAS.VERIFY_MIRROR ? fetchTimeout(GAS.VERIFY_MIRROR, opt, 14000) : null;
+    try {
+      const r = await (mirror ? Promise.any([primary, mirror]) : primary);
+      return await r.json();
+    } catch (e) {
+      // último intento directo (sin romper UX)
+      const r2 = await fetchRetry(GAS.VERIFY, opt, 14000, 0).catch(() => null);
+      return r2 ? r2.json() : { ok: false, acceso: false, motivo: 'Verificación no disponible' };
+    }
   }
 
-  async function actualizarGAS(payload) {
-    const r = await fetchRetry(GAS.UPDATE, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    }, 12000, 1);
-    return r.json();
+  // ------------------ Util negocio ------------------
+  function ema6040(actual, nuevo) {
+    const a = Number(actual || 0), n = Math.max(0, Math.min(100, Number(nuevo || 0)));
+    return Math.round(0.6 * a + 0.4 * n);
+  }
+  function normalizarCalifMap(temas, mapa) {
+    const out = {};
+    for (const t of temas) {
+      const v = mapa && Object.prototype.hasOwnProperty.call(mapa, t) ? Number(mapa[t]) : 0;
+      out[t] = Math.max(0, Math.min(100, Number.isFinite(v) ? v : 0));
+    }
+    return out;
   }
 
   // ------------------ Actions ------------------
@@ -270,7 +256,7 @@ Instrucciones clínicas y de estilo (OBLIGATORIAS):
       return res.status(200).json({ ok: true, flags, now: new Date().toISOString() });
     }
 
-    // temas (diagnóstico)
+    // temas
     if (action === 'temas') {
       const { tipoInstitucion } = body || {};
       if (!tipoInstitucion) return res.status(400).json({ ok: false, error: 'tipoInstitucion requerido' });
@@ -278,7 +264,7 @@ Instrucciones clínicas y de estilo (OBLIGATORIAS):
       return res.status(200).json({ ok: true, temas });
     }
 
-    // registro (ligero; valida código y precalienta temas)
+    // registro
     if (action === 'registro') {
       const { codigo } = body || {};
       if (!codigo) return res.status(400).json({ ok: false, error: 'codigo requerido' });
@@ -328,17 +314,18 @@ Instrucciones clínicas y de estilo (OBLIGATORIAS):
         correoEmergencia: usuario?.correoEmergencia || null
       }, TTL_MAIN);
 
-      // Temas + perfil base
       const { temas, perfil } = await obtenerTemasYPerfil(String(lic.tipoInstitucion || '').toLowerCase(), email);
 
-      // BG si test inicial no se ha enviado (AW)
       const awMarcado = !!usuario?.testYaEnviado;
       (async () => {
         try {
           if (!awMarcado) {
-            await actualizarGAS({ modo: 'ANALISIS_INICIAL', email, codigo: lic.codigo, tipoInstitucion: lic.tipoInstitucion });
+            await fetchRetry(GAS.UPDATE, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ modo: 'ANALISIS_INICIAL', email, codigo: lic.codigo, tipoInstitucion: lic.tipoInstitucion })
+            }, 12000, 0).catch(() => null);
             const asunto = 'Bienvenido/a a AUREA. Este es el resultado de tu test.';
-            await sendEmail({ to: email, subject: asunto, text: 'Gracias por registrarte en AUREA. Procesamos tu test inicial.' });
+            await sendEmail({ to: email, subject: asunto, text: 'Procesamos tu test inicial.' });
             if (lic.correoSOS) await sendEmail({ to: lic.correoSOS, subject: asunto, text: `Se procesó el test de ${email}` });
             await sendEmail({ to: 'alfredo@positronconsulting.com', subject: asunto, text: `Se procesó el test de ${email}` });
           }
@@ -363,7 +350,7 @@ Instrucciones clínicas y de estilo (OBLIGATORIAS):
       });
     }
 
-    // chat (OpenAI hedge; siempre respuesta de OpenAI)
+    // chat
     if (action === 'chat') {
       const email = String(body.email || body.correo || '').toLowerCase();
       const nombre = body.nombre || '';
@@ -374,24 +361,19 @@ Instrucciones clínicas y de estilo (OBLIGATORIAS):
 
       if (!mensaje || !tipoInstitucion) return res.status(400).json({ ok: false, error: 'mensaje y tipoInstitucion requeridos' });
 
-      // Lista de 11 temas (desde GAS_PERFIL)
       const { temas } = await obtenerTemasYPerfil(tipoInstitucion, email || 'chat@aurea');
       if (!Array.isArray(temas) || temas.length !== 11) return res.status(500).json({ ok: false, error: 'Temas inválidos' });
 
       const prompt = buildPrompt({ nombre, mensaje, temas });
-
-      // Hedge: dos intentos paralelos, devolvemos el primero válido
-      const { json, usage, costo } = await callOpenAI_Hedge({ prompt }).catch(e => { throw e; });
+      const { json, usage, costo } = await callOpenAI_Hedge({ prompt });
       await logTokens({ usuario: email || 'anon', institucion: '', usage, costoUSD: costo });
 
-      // Normalización estricta
       const temaDetectado = String(json?.temaDetectado || '').trim();
       const porcentaje = Math.max(0, Math.min(100, Number(json?.porcentaje || 0)));
       const califMap = normalizarCalifMap(temas, json?.calificacionesPorTema || {});
       const SOS = String(json?.SOS || 'OK').toUpperCase() === 'ALERTA' ? 'ALERTA' : 'OK';
       const mensajeUsuario = String(json?.mensajeUsuario || '').trim();
 
-      // Perfil sugerido con EMA 60/40 si el tema es válido y %≥60
       const perfilNuevo = { ...(perfilActual || {}) };
       let notas = '';
 
@@ -405,7 +387,6 @@ Instrucciones clínicas y de estilo (OBLIGATORIAS):
         perfilNuevo[temaDetectado] = ema6040(actual, sugerida);
       }
 
-      // SOS → historial (no bloquea)
       if (SOS === 'ALERTA' && GAS.HIST) {
         try {
           await fetchRetry(GAS.HIST, {
@@ -436,36 +417,45 @@ Instrucciones clínicas y de estilo (OBLIGATORIAS):
       });
     }
 
-    // finalizar (acepta email o correo)
+    // finalizar (usa tipoInstitucion desde caché para el GAS)
     if (action === 'finalizar') {
       const correo = String(body.correo || body.email || '').toLowerCase();
       const codigo = String(body.codigo || '').toUpperCase();
       const perfilCompleto = body.perfilCompleto;
       const notas = body.notas || '';
-
       if (!correo || !codigo || !perfilCompleto) {
         return res.status(400).json({ ok: false, error: 'correo, codigo y perfilCompleto requeridos' });
       }
 
+      let tipoInstitucion = String(body.tipoInstitucion || '').toLowerCase();
+      if (!tipoInstitucion) {
+        const meta = await rGet(K_USR(correo));
+        tipoInstitucion = String(meta?.tipoInstitucion || '').toLowerCase();
+      }
+
       try {
-        const r = await actualizarGAS({
-          modo: 'GUARDAR_PERFIL_FINAL',
-          email: correo,
-          codigo,
-          perfil: perfilCompleto,
-          notas
-        });
-        if (!r?.ok) throw new Error('GAS no confirmó guardado');
+        const r = await fetchRetry(GAS.UPDATE, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            modo: 'GUARDAR_PERFIL_FINAL',
+            email: correo,
+            codigo,
+            tipoInstitucion,
+            perfil: perfilCompleto,
+            notas
+          })
+        }, 12000, 0);
+        const j = await r.json().catch(() => ({}));
+        if (!j?.ok) throw new Error('GAS no confirmó guardado');
         await telemetry({ usuario: correo, ms: Date.now() - t0, status: 'OK', detalle: 'finalizar' });
         return res.status(200).json({ ok: true, guardado: true });
       } catch (err) {
-        await rSet(K_BKP(correo), { email: correo, codigo, perfilCompleto, notas, fecha: new Date().toISOString() }, TTL_BACKUP);
+        await rSet(K_BKP(correo), { email: correo, codigo, tipoInstitucion, perfilCompleto, notas, fecha: new Date().toISOString() }, TTL_BACKUP);
         await telemetry({ usuario: correo, ms: Date.now() - t0, status: 'BKP', detalle: 'finalizar->backup' });
         return res.status(200).json({ ok: true, guardado: false, backup: true });
       }
     }
 
-    // action desconocida
     return res.status(400).json({ ok: false, error: 'action inválida' });
 
   } catch (err) {
@@ -475,4 +465,3 @@ Instrucciones clínicas y de estilo (OBLIGATORIAS):
   }
 }
 // ======================= FIN ORQUESTADOR =======================
-
