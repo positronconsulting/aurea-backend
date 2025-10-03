@@ -1,7 +1,22 @@
 // pages/api/orquestador.js
-// ======================= AUREA ORQUESTADOR — FINAL =======================
+// AUREA — Orquestador Único (registro/login, temas, chat, finalizar)
+// ───────────────────────────────────────────────────────────────────
+// ENV requeridas (Vercel):
+// FRONTEND_ORIGIN=https://www.positronconsulting.com
+// OPENAI_API_KEY=sk-...
+// OPENAI_TIMEOUT_MS=35000
+// UPSTASH_REDIS_REST_URL=...
+// UPSTASH_REDIS_REST_TOKEN=...
+// SENDGRID_API_KEY=...
+// GAS_VERIFY_URL=...           // verificarCodigoYUsuario.gs (devuelve usuario, temas, perfilBase)
+// GAS_UPDATE_PROFILE_URL=...   // GuardaPerfilFinal.gs (GUARDAR_PERFIL_FINAL)
+// GAS_LOGS_URL=...             // registrarTokens.gs
+// GAS_HIST_URL=...             // guardarHistorial.gs (opcional para SOS)
+// GAS_TEL_URL=...              // Telemetria.gs (opcional)
+// OPENAI_COST_PER_TOKEN_USD=0.000005 (opcional)
 
 export default async function handler(req, res) {
+  // ── CORS ─────────────────────────────────────────────────────────
   const ORIGIN = process.env.FRONTEND_ORIGIN || 'https://www.positronconsulting.com';
   res.setHeader('Access-Control-Allow-Origin', ORIGIN);
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -10,75 +25,89 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Método no permitido' });
 
   const t0 = Date.now();
-  const action = String((req.query || {}).action || '').trim().toLowerCase();
-  const body = req.body || {};
+  const { action } = (req.query || {});
+  const body = (req.body || {});
   const routeLabel = `orq/${action || 'none'}`;
 
-  // ------------------ Helpers ------------------
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-  async function fetchTimeout(url, options = {}, timeoutMs = 12000) {
-    const ctrl = new AbortController();
-    const id = setTimeout(() => ctrl.abort(), timeoutMs);
-    try {
-      const r = await fetch(url, { ...options, signal: ctrl.signal });
-      clearTimeout(id);
-      return r;
-    } catch (e) {
-      clearTimeout(id);
-      throw e;
-    }
-  }
-  async function fetchRetry(url, options, timeoutMs, retries = 1, backoffMs = 500) {
-    let lastErr;
+  // ── Helpers base ────────────────────────────────────────────────
+  const wait = (ms) => new Promise(r => setTimeout(r, ms));
+  async function fetchTimeout(url, options = {}, timeoutMs = 12000, retries = 0, backoff = 500) {
     for (let i = 0; i <= retries; i++) {
+      const ctrl = new AbortController();
+      const id = setTimeout(() => ctrl.abort(), timeoutMs);
       try {
-        const r = await fetchTimeout(url, options, timeoutMs);
+        const r = await fetch(url, { ...options, signal: ctrl.signal });
+        clearTimeout(id);
         if (!r.ok && (r.status >= 500 || r.status === 429)) throw new Error(`HTTP ${r.status}`);
         return r;
       } catch (e) {
-        lastErr = e;
-        if (i < retries) await sleep(backoffMs * Math.pow(2, i));
+        clearTimeout(id);
+        if (i === retries) throw e;
+        await wait(backoff * Math.pow(2, i));
       }
     }
-    throw lastErr;
   }
 
-  // ------------------ Redis (Upstash) ------------------
+  // ── Redis (Upstash) ─────────────────────────────────────────────
   const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL;
   const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
-  const TTL_MAIN = 60 * 60;         // 60 min
-  const TTL_BACKUP = 24 * 60 * 60;  // 24h
+  const TTL_1H = 60 * 60;
+  const TTL_24H = 24 * 60 * 60;
+
   async function rGet(key) {
     if (!REDIS_URL || !REDIS_TOKEN) return null;
-    const r = await fetch(`${REDIS_URL}/get/${encodeURIComponent(key)}`, { headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
-    const j = await r.json().catch(() => ({}));
+    const r = await fetch(`${REDIS_URL}/get/${encodeURIComponent(key)}`, {
+      headers: { Authorization: `Bearer ${REDIS_TOKEN}` }
+    });
+    const j = await r.json();
     if (j?.result == null) return null;
     try { return JSON.parse(j.result); } catch { return j.result; }
   }
-  async function rSet(key, value, ttlSec = TTL_MAIN) {
+  async function rSet(key, value, ttlSec = TTL_1H) {
     if (!REDIS_URL || !REDIS_TOKEN) return false;
     const payload = typeof value === 'string' ? value : JSON.stringify(value);
-    await fetch(`${REDIS_URL}/set/${encodeURIComponent(key)}/${encodeURIComponent(payload)}`, { method: 'POST', headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
-    if (ttlSec) await fetch(`${REDIS_URL}/expire/${encodeURIComponent(key)}/${ttlSec}`, { method: 'POST', headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
+    await fetch(`${REDIS_URL}/set/${encodeURIComponent(key)}/${encodeURIComponent(payload)}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${REDIS_TOKEN}` }
+    });
+    await fetch(`${REDIS_URL}/expire/${encodeURIComponent(key)}/${ttlSec}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${REDIS_TOKEN}` }
+    });
     return true;
   }
 
-  // ------------------ GAS & Email ------------------
+  // ── Keys de caché ───────────────────────────────────────────────
+  const K_LIC = (codigo) => `lic:${String(codigo || '').toUpperCase()}`;
+  const K_USR = (email) => `usr:${String(email || '').toLowerCase()}`;
+  const K_TEM = (tipo) => `temas:${String(tipo || '').toLowerCase()}`;       // social|empresa|educacion
+  const K_BKP = (email) => `bkpperfil:${String(email || '').toLowerCase()}`;
+
+  // ── GAS & Email ─────────────────────────────────────────────────
   const GAS = {
-    VERIFY: process.env.GAS_VERIFY_URL,             // verificarCodigoYUsuario.gs (usa 'correo')
-    VERIFY_MIRROR: process.env.GAS_VERIFY_MIRROR_URL || null, // opcional
-    PERFIL: process.env.GAS_PERFIL_URL,             // perfilUsuario.gs (temas E–O + perfil base)
-    UPDATE: process.env.GAS_UPDATE_PROFILE_URL,     // guardarPerfilFinal.gs (nuevo)
-    LOGS: process.env.GAS_LOGS_URL,                 // registrarTokens.gs
-    TEMAS: process.env.GAS_TEMAS_URL,               // métricas (opcional)
-    HIST: process.env.GAS_HISTORIAL_URL,            // guardarHistorial (SOS)
-    TEL: process.env.GAS_TELEMETRIA_URL             // Telemetria.gs
+    VERIFY: process.env.GAS_VERIFY_URL,            // verificarCodigoYUsuario.gs
+    UPDATE: process.env.GAS_UPDATE_PROFILE_URL,    // GuardaPerfilFinal.gs
+    LOGS: process.env.GAS_LOGS_URL,                // registrarTokens.gs
+    HIST: process.env.GAS_HIST_URL,                // guardarHistorial.gs (opcional)
+    TEL: process.env.GAS_TEL_URL                   // Telemetria.gs (opcional)
   };
 
   async function telemetry({ usuario, ms, status, detalle }) {
     if (!GAS.TEL) return;
-    const payload = { fecha: new Date().toISOString(), usuario: usuario || 'anon', ruta: routeLabel, ms, status, detalle: String(detalle || '') };
-    try { await fetchRetry(GAS.TEL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }, 8000, 0); } catch {}
+    const payload = {
+      fecha: new Date().toISOString(),
+      usuario: usuario || 'anon',
+      ruta: routeLabel,
+      ms,
+      status,
+      detalle: String(detalle || '')
+    };
+    try {
+      await fetchTimeout(GAS.TEL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }, 12000, 0);
+    } catch { /* silent */ }
   }
 
   async function logTokens({ usuario, institucion, usage, costoUSD }) {
@@ -92,42 +121,38 @@ export default async function handler(req, res) {
       totalTokens: usage.total_tokens || 0,
       costoUSD: Number(costoUSD || 0)
     };
-    try { await fetchRetry(GAS.LOGS, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }, 8000, 0); } catch {}
+    try {
+      await fetchTimeout(GAS.LOGS, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }, 12000, 0);
+    } catch { /* silent */ }
   }
 
   async function sendEmail({ to, subject, text }) {
     const key = process.env.SENDGRID_API_KEY;
     if (!key || !to) return false;
-    try {
-      const r = await fetchRetry('https://api.sendgrid.com/v3/mail/send', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          personalizations: [{ to: [{ email: to }] }],
-          from: { email: 'no-reply@positronconsulting.com', name: 'AUREA' },
-          reply_to: { email: 'alfredo@positronconsulting.com', name: 'Alfredo' },
-          subject,
-          content: [{ type: 'text/plain', value: text }]
-        })
-      }, 8000, 0);
-      return r.ok;
-    } catch { return false; }
+    const r = await fetchTimeout('https://api.sendgrid.com/v3/mail/send', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        personalizations: [{ to: [{ email: to }] }],
+        from: { email: 'no-reply@positronconsulting.com', name: 'AUREA' },
+        reply_to: { email: 'alfredo@positronconsulting.com', name: 'Alfredo' },
+        subject,
+        content: [{ type: 'text/plain', value: text }]
+      })
+    }, 12000, 0);
+    return r.ok;
   }
 
-  // ------------------ Keys ------------------
-  const K_LIC = (codigo) => `lic:${String(codigo || '').toUpperCase()}`;
-  const K_USR = (email) => `usr:${String(email || '').toLowerCase()}`;
-  const K_TEM = (tipo) => `temas:${String(tipo || '').toLowerCase()}`; // social|empresa|educacion
-  const K_BKP = (email) => `bkpperfil:${String(email || '').toLowerCase()}`;
-
-  // ------------------ OpenAI ------------------
+  // ── OpenAI ──────────────────────────────────────────────────────
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
   const OPENAI_COST = Number(process.env.OPENAI_COST_PER_TOKEN_USD || '0.000005');
-  const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
-  const OPENAI_MODEL = 'gpt-4o-mini';
+  const OPENAI_TMO = Number(process.env.OPENAI_TIMEOUT_MS || '35000');
 
   function buildPrompt({ nombre, mensaje, temas }) {
-    const lista = (Array.isArray(temas) && temas.length) ? temas.join(', ') : 'Ansiedad, Depresión, Burnout, Estrés, Comunicación, Trabajo en equipo, Productividad, Conflictos, Cambio, Motivación, Toma de decisiones';
+    const lista = (Array.isArray(temas) && temas.length) ? temas.join(', ') : 'Ansiedad, Depresión, Burnout';
     return `
 Eres AUREA, psicoterapeuta especializado en Terapia Cognitivo Conductual y Neurociencia.
 Debes RESPONDER EXCLUSIVAMENTE en JSON válido con EXACTAMENTE estas claves:
@@ -136,92 +161,58 @@ Debes RESPONDER EXCLUSIVAMENTE en JSON válido con EXACTAMENTE estas claves:
   "temaDetectado": "string",
   "porcentaje": 0-100,
   "calificacionesPorTema": {
-    "<Tema1>": 0-100
+    "<Tema1>": 0-100,
+    "<Tema2>": 0-100
   },
   "SOS": "OK" | "ALERTA"
 }
-Contexto:
+
+Contexto del usuario:
 - Nombre: ${nombre || 'Usuario'}
 - Mensaje: "${String(mensaje || '').replace(/"/g, '\\"')}"
-Temas PERMITIDOS (elige 1): ${lista}
-Instrucciones:
-- Solo JSON; sin texto extra.
-- "mensajeUsuario": ≤100 palabras; TCC+Neuro; empático, NO complaciente; invitar a insight/acción SOLO si es necesario.
-- Forzar mapeo a 1 tema permitido o "Otro: <tema>".
-- "calificacionesPorTema": entero 0–100 para CADA uno de los 11 temas permitidos (0 si no aplica).
-- "porcentaje": certeza sobre el tema detectado (entero).
-- "SOS": "ALERTA" solo ante riesgo agudo.
+
+Temas PERMITIDOS (elige exactamente 1 para "temaDetectado"):
+${lista}
+
+Instrucciones clínicas y de estilo (OBLIGATORIAS):
+- Responde SOLO el JSON sin texto adicional ni comentarios fuera del JSON.
+- "mensajeUsuario": máx 100 palabras, profesional TCC + Neuro; empático pero NO complaciente; invita a insight y a un siguiente paso realista SOLO si es necesario.
+- Forzar mapeo a UNO de los temas PERMITIDOS. Si no es clínicamente defendible, usar "Otro: <tema>".
+- "calificacionesPorTema": entero 0–100 para CADA uno de los 11 temas PERMITIDOS (0 si no presenta señales).
+- "porcentaje": entero 0–100 de certeza sobre "temaDetectado".
+- "SOS": "ALERTA" ante riesgo agudo (ideación/plan/intento suicida, daño a terceros, psicosis activa, violencia severa, consumo con riesgo inmediato). En tal caso, el "mensajeUsuario" será más directivo con acompañamiento.
+- Evita clichés y frases de placebo. Sé claro, directo y respetuoso.
 `.trim();
   }
 
-  async function openAIOnce({ prompt, timeoutMs = 9000, temperature = 0.4 }) {
+  async function callOpenAI({ prompt }) {
     const req = {
-      model: OPENAI_MODEL,
+      model: 'gpt-4o-mini',
       messages: [{ role: 'user', content: prompt }],
-      temperature,
+      temperature: 0.4,
       max_tokens: 500,
       response_format: { type: 'json_object' }
     };
-    const r = await fetchTimeout(OPENAI_URL, {
+
+    const r = await fetchTimeout('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(req)
-    }, timeoutMs);
+    }, OPENAI_TMO, 0); // ← un solo intento, timeout controlado
+
     const data = await r.json().catch(() => ({}));
     if (!data?.choices?.[0]?.message?.content) throw new Error('Respuesta vacía de OpenAI');
+
     let json;
     try { json = JSON.parse(data.choices[0].message.content); }
     catch { throw new Error('Formato inválido (no JSON)'); }
+
     const usage = data.usage || {};
     const costo = usage.total_tokens ? Number((usage.total_tokens * OPENAI_COST).toFixed(6)) : 0;
     return { json, usage, costo };
   }
-  // Hedge a OpenAI
-  async function callOpenAI_Hedge({ prompt }) {
-    const pA = openAIOnce({ prompt, timeoutMs: 9000, temperature: 0.3 });
-    const pB = openAIOnce({ prompt, timeoutMs: 12000, temperature: 0.5 });
-    return await Promise.any([pA, pB]);
-  }
 
-  // ------------------ Temas/Perfil ------------------
-  async function obtenerTemasYPerfil(tipoInstitucion, correo) {
-    const cacheKey = K_TEM(tipoInstitucion);
-    let temas = await rGet(cacheKey);
-    let perfil = null;
-
-    if (!Array.isArray(temas) || temas.length !== 11 || !perfil) {
-      const r = await fetchRetry(GAS.PERFIL, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ correo, tipoInstitucion })
-      }, 12000, 1);
-      const data = await r.json().catch(() => ({}));
-      if (!data?.ok || !Array.isArray(data.temas) || !data.temas.length) {
-        return { temas: [], perfil: {} };
-      }
-      temas = data.temas;
-      perfil = data.perfil || {};
-      await rSet(cacheKey, temas, TTL_MAIN);
-    }
-    return { temas, perfil: perfil || {} };
-  }
-
-  // ------------------ Verificación (hedge a GAS) ------------------
-  async function verificarCodigoUsuario({ email, codigo }) {
-    const payload = { correo: email, codigo };
-    const opt = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) };
-    const primary = fetchTimeout(GAS.VERIFY, opt, 14000);
-    const mirror = GAS.VERIFY_MIRROR ? fetchTimeout(GAS.VERIFY_MIRROR, opt, 14000) : null;
-    try {
-      const r = await (mirror ? Promise.any([primary, mirror]) : primary);
-      return await r.json();
-    } catch (e) {
-      // último intento directo (sin romper UX)
-      const r2 = await fetchRetry(GAS.VERIFY, opt, 14000, 0).catch(() => null);
-      return r2 ? r2.json() : { ok: false, acceso: false, motivo: 'Verificación no disponible' };
-    }
-  }
-
-  // ------------------ Util negocio ------------------
+  // ── Utilidades de negocio ───────────────────────────────────────
   function ema6040(actual, nuevo) {
     const a = Number(actual || 0), n = Math.max(0, Math.min(100, Number(nuevo || 0)));
     return Math.round(0.6 * a + 0.4 * n);
@@ -235,101 +226,108 @@ Instrucciones:
     return out;
   }
 
-  // ------------------ Actions ------------------
+  // ── Obtener Temas (uso interno) ─────────────────────────────────
+  // Primero intenta Redis; si no hay, opcionalmente podría llamar a GAS TEMAS (no requerido).
+  async function obtenerTemas(tipoInstitucion) {
+    const key = K_TEM(tipoInstitucion);
+    const cached = await rGet(key);
+    if (Array.isArray(cached) && cached.length) return cached;
+    // Si no hay cache, devolvemos [] para no depender de GAS en runtime.
+    return [];
+  }
+
   try {
-    // version
+    // ── version ───────────────────────────────────────────────────
     if (action === 'version') {
       const flags = {
         FRONTEND_ORIGIN: !!process.env.FRONTEND_ORIGIN,
-        OPENAI_API_KEY: !!OPENAI_API_KEY,
-        UPSTASH_URL: !!REDIS_URL,
-        UPSTASH_TOKEN: !!REDIS_TOKEN,
+        OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
+        UPSTASH_URL: !!process.env.UPSTASH_REDIS_REST_URL,
+        UPSTASH_TOKEN: !!process.env.UPSTASH_REDIS_REST_TOKEN,
         SENDGRID: !!process.env.SENDGRID_API_KEY,
-        GAS_VERIFY: !!GAS.VERIFY,
-        GAS_PERFIL: !!GAS.PERFIL,
-        GAS_UPDATE: !!GAS.UPDATE,
-        GAS_LOGS: !!GAS.LOGS,
-        GAS_TEMAS: !!GAS.TEMAS,
-        GAS_HIST: !!GAS.HIST,
-        GAS_TEL: !!GAS.TEL
+        GAS_VERIFY: !!process.env.GAS_VERIFY_URL,
+        GAS_PERFIL: !!process.env.GAS_PERFIL_URL, // por compatibilidad si existiera
+        GAS_UPDATE: !!process.env.GAS_UPDATE_PROFILE_URL,
+        GAS_LOGS: !!process.env.GAS_LOGS_URL,
+        GAS_TEMAS: !!process.env.GAS_TEMAS_URL,
+        GAS_HIST: !!process.env.GAS_HIST_URL,
+        GAS_TEL: !!process.env.GAS_TEL_URL
       };
       return res.status(200).json({ ok: true, flags, now: new Date().toISOString() });
     }
 
-    // temas
-    if (action === 'temas') {
-      const { tipoInstitucion } = body || {};
-      if (!tipoInstitucion) return res.status(400).json({ ok: false, error: 'tipoInstitucion requerido' });
-      const { temas } = await obtenerTemasYPerfil(String(tipoInstitucion).toLowerCase(), 'diagnostic@aurea');
-      return res.status(200).json({ ok: true, temas });
-    }
-
-    // registro
+    // ── registro (opcional) ───────────────────────────────────────
     if (action === 'registro') {
       const { codigo } = body || {};
       if (!codigo) return res.status(400).json({ ok: false, error: 'codigo requerido' });
 
-      let lic = await rGet(K_LIC(codigo));
-      if (!lic) {
-        const ver = await verificarCodigoUsuario({ email: null, codigo });
-        if (!ver?.ok) return res.status(400).json({ ok: false, error: ver?.motivo || 'Código inválido' });
-        lic = {
-          codigo: String(codigo).toUpperCase(),
-          activo: ver?.codigoActivo ?? true,
-          disponibles: ver?.licenciasDisponibles ?? null,
-          tipoInstitucion: ver?.tipoInstitucion || null,
-          correoSOS: ver?.correoSOS || null,
-          institucion: ver?.institucion || null
-        };
-        await rSet(K_LIC(codigo), lic, TTL_MAIN);
-      }
-      if (lic?.tipoInstitucion) { try { await obtenerTemasYPerfil(lic.tipoInstitucion, 'preload@aurea'); } catch {} }
-      return res.status(200).json({ ok: true, licencia: lic });
+      // Guardamos licencia básica en cache (opcional)
+      await rSet(K_LIC(codigo), { codigo: String(codigo).toUpperCase() }, TTL_1H);
+      return res.status(200).json({ ok: true, licencia: { codigo: String(codigo).toUpperCase() } });
     }
 
-    // login
+    // ── login ─────────────────────────────────────────────────────
     if (action === 'login') {
       const { email, codigo } = body || {};
       if (!email || !codigo) return res.status(400).json({ ok: false, error: 'email y codigo requeridos' });
 
-      const ver = await verificarCodigoUsuario({ email, codigo });
-      if (!ver?.ok || !ver?.acceso) return res.status(403).json({ ok: false, error: ver?.motivo || 'Acceso denegado' });
+      // Verificar con GAS (estricto por correo+codigo) — este GAS devuelve usuario, temas, perfilBase
+      const rVer = await fetchTimeout(process.env.GAS_VERIFY_URL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ correo: email, codigo })
+      }, 12000, 0);
+      const ver = await rVer.json();
+
+      if (!ver?.ok || !ver?.acceso) {
+        return res.status(403).json({ ok: false, error: ver?.motivo || 'Acceso denegado', debug: ver });
+      }
 
       const usuario = ver?.usuario || {};
-      const lic = {
-        codigo: String(codigo).toUpperCase(),
-        activo: ver?.codigoActivo ?? true,
-        disponibles: ver?.licenciasDisponibles ?? null,
-        tipoInstitucion: ver?.tipoInstitucion || null,
-        correoSOS: ver?.correoSOS || null,
-        institucion: ver?.institucion || null
-      };
-      await rSet(K_LIC(codigo), lic, TTL_MAIN);
+      const tipo = (ver?.tipoInstitucion || usuario?.tipoInstitucion || '').toLowerCase();
+      const institucion = ver?.institucion || '';
+      const correoSOS = ver?.correoSOS || null;
+
+      // Cachear temas de este tipo — **Clave del fix de “temas vacíos”**
+      const temasLogin = Array.isArray(ver?.temas) ? ver.temas.map(t => String(t)) : [];
+      if (tipo && temasLogin.length) {
+        try { await rSet(K_TEM(tipo), temasLogin, TTL_24H); } catch {}
+      }
+
+      // Cachear usuario básico 1h
       await rSet(K_USR(email), {
         nombre: usuario?.nombre || '',
-        edad: usuario?.edad || usuario?.fechaNacimiento || '',
-        institucion: lic.institucion,
-        tipoInstitucion: lic.tipoInstitucion,
-        correoSOS: lic.correoSOS,
-        correoEmergencia: usuario?.correoEmergencia || null
-      }, TTL_MAIN);
+        edad: usuario?.fechaNacimiento || usuario?.edad || '',
+        institucion,
+        tipoInstitucion: tipo,
+        correoSOS: correoSOS,
+        correoEmergencia: usuario?.correoEmergencia || null,
+        perfilEmocional: ver?.perfilBase || null
+      }, TTL_1H);
 
-      const { temas, perfil } = await obtenerTemasYPerfil(String(lic.tipoInstitucion || '').toLowerCase(), email);
+      // Warm licencia
+      await rSet(K_LIC(codigo), { codigo: String(codigo).toUpperCase(), tipoInstitucion: tipo, institucion, correoSOS }, TTL_1H);
 
-      const awMarcado = !!usuario?.testYaEnviado;
+      // BG: si el test no está enviado (AW), iniciar análisis inicial y correo
+      const testYaEnviado = !!usuario?.testYaEnviado;
       (async () => {
         try {
-          if (!awMarcado) {
-            await fetchRetry(GAS.UPDATE, {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ modo: 'ANALISIS_INICIAL', email, codigo: lic.codigo, tipoInstitucion: lic.tipoInstitucion })
-            }, 12000, 0).catch(() => null);
+          if (!testYaEnviado) {
+            // Aquí solo notificamos proceso; el perfil llegará cuando GAS termine.
             const asunto = 'Bienvenido/a a AUREA. Este es el resultado de tu test.';
-            await sendEmail({ to: email, subject: asunto, text: 'Procesamos tu test inicial.' });
-            if (lic.correoSOS) await sendEmail({ to: lic.correoSOS, subject: asunto, text: `Se procesó el test de ${email}` });
+            // Enriquecer contenido para que no llegue “vacío”
+            const base = ver?.perfilBase || null;
+            const temasTxt = (temasLogin.length ? `Temas detectados para tu institución: ${temasLogin.join(', ')}\n` : '');
+            const baseTxt = base ? `Perfil base inicial:\n${JSON.stringify(base, null, 2)}\n` : 'Perfil base inicial aún no disponible.\n';
+            const textoU = `Hola ${usuario?.nombre || ''},
+Tu análisis inicial está en proceso. Recibirás tu perfil completo en breve.
+${temasTxt}${baseTxt}
+— AUREA`;
+
+            await sendEmail({ to: email, subject: asunto, text: textoU });
+            if (correoSOS) await sendEmail({ to: correoSOS, subject: asunto, text: `Se procesó el test de ${email}` });
             await sendEmail({ to: 'alfredo@positronconsulting.com', subject: asunto, text: `Se procesó el test de ${email}` });
           }
-        } catch {}
+        } catch { /* no bloquear login */ }
       })();
 
       return res.status(200).json({
@@ -338,68 +336,71 @@ Instrucciones:
         usuario: {
           email,
           nombre: usuario?.nombre || '',
-          edad: usuario?.edad || usuario?.fechaNacimiento || '',
-          institucion: lic.institucion,
-          tipoInstitucion: lic.tipoInstitucion,
-          correoSOS: lic.correoSOS,
+          edad: usuario?.fechaNacimiento || usuario?.edad || '',
+          institucion,
+          tipoInstitucion: tipo,
+          correoSOS,
           correoEmergencia: usuario?.correoEmergencia || null,
-          perfilEmocional: null
+          perfilEmocional: ver?.perfilBase || null
         },
-        temas,
-        perfilBase: perfil
+        temas: temasLogin,
+        perfilBase: ver?.perfilBase || null
       });
     }
 
-    // chat
-    if (action === 'chat') {
-      const email = String(body.email || body.correo || '').toLowerCase();
-      const nombre = body.nombre || '';
-      const codigo = body.codigo || '';
-      const tipoInstitucion = String(body.tipoInstitucion || '').toLowerCase();
-      const mensaje = body.mensaje || '';
-      const perfilActual = body.perfilActual || {};
+    // ── temas (solo caché) ────────────────────────────────────────
+    if (action === 'temas') {
+      const { tipoInstitucion } = body || {};
+      if (!tipoInstitucion) return res.status(400).json({ ok: false, error: 'tipoInstitucion requerido' });
+      const temas = await rGet(K_TEM(tipoInstitucion));
+      return res.status(200).json({ ok: true, temas: Array.isArray(temas) ? temas : [] });
+    }
 
+    // ── chat ──────────────────────────────────────────────────────
+    if (action === 'chat') {
+      const { email, nombre, codigo, tipoInstitucion, mensaje, perfilActual } = body || {};
       if (!mensaje || !tipoInstitucion) return res.status(400).json({ ok: false, error: 'mensaje y tipoInstitucion requeridos' });
 
-      const { temas } = await obtenerTemasYPerfil(tipoInstitucion, email || 'chat@aurea');
-      if (!Array.isArray(temas) || temas.length !== 11) return res.status(500).json({ ok: false, error: 'Temas inválidos' });
+      const temas = await obtenerTemas(tipoInstitucion); // cache-first; si vacío, lista mínima en prompt
+      const prompt = buildPrompt({ nombre, mensaje, temas: temas.length ? temas : undefined });
 
-      const prompt = buildPrompt({ nombre, mensaje, temas });
-      const { json, usage, costo } = await callOpenAI_Hedge({ prompt });
+      const { json, usage, costo } = await callOpenAI({ prompt });
       await logTokens({ usuario: email || 'anon', institucion: '', usage, costoUSD: costo });
 
-      const temaDetectado = String(json?.temaDetectado || '').trim();
+      // Normalización
+      const tema = String(json?.temaDetectado || '').trim();
       const porcentaje = Math.max(0, Math.min(100, Number(json?.porcentaje || 0)));
-      const califMap = normalizarCalifMap(temas, json?.calificacionesPorTema || {});
+      const temaValido = temas.includes(tema);
+      const califMap = normalizarCalifMap(temas.length ? temas : Object.keys(json?.calificacionesPorTema || {}), json?.calificacionesPorTema);
       const SOS = String(json?.SOS || 'OK').toUpperCase() === 'ALERTA' ? 'ALERTA' : 'OK';
       const mensajeUsuario = String(json?.mensajeUsuario || '').trim();
 
+      // Perfil sugerido (EMA 60/40 sólo si tema pertenece a la lista y porcentaje ≥ 60)
       const perfilNuevo = { ...(perfilActual || {}) };
       let notas = '';
-
-      const temaValido = temaDetectado && temas.includes(temaDetectado);
       if (!temaValido) {
-        if (temaDetectado && /^Otro:/i.test(temaDetectado)) notas = temaDetectado;
-        else if (temaDetectado) notas = `Otro: ${temaDetectado}`;
+        if (tema && /^Otro:/i.test(tema)) notas = tema;
+        else if (tema) notas = `Otro: ${tema}`;
       } else if (porcentaje >= 60) {
-        const actual = Number(perfilNuevo[temaDetectado] || 0);
-        const sugerida = Number(califMap[temaDetectado] || 0);
-        perfilNuevo[temaDetectado] = ema6040(actual, sugerida);
+        const actual = Number(perfilNuevo[tema] || 0);
+        const sugerida = Number(califMap[tema] || 0);
+        perfilNuevo[tema] = ema6040(actual, sugerida);
       }
 
+      // SOS → historial (opcional)
       if (SOS === 'ALERTA' && GAS.HIST) {
         try {
-          await fetchRetry(GAS.HIST, {
+          await fetchTimeout(GAS.HIST, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               fecha: new Date().toISOString(),
               usuario: email || 'anon',
               mensaje,
-              tema: temaValido ? temaDetectado : 'N/A',
+              tema: temaValido ? tema : 'N/A',
               porcentaje,
               nota: notas || ''
             })
-          }, 8000, 0);
+          }, 12000, 0);
         } catch {}
       }
 
@@ -408,7 +409,7 @@ Instrucciones:
       return res.status(200).json({
         ok: true,
         mensajeUsuario: mensajeUsuario || 'Gracias por compartir.',
-        temaDetectado: temaValido ? temaDetectado : '',
+        temaDetectado: temaValido ? tema : '',
         porcentaje,
         calificacionesPorTema: califMap,
         SOS,
@@ -417,51 +418,47 @@ Instrucciones:
       });
     }
 
-    // finalizar (usa tipoInstitucion desde caché para el GAS)
+    // ── finalizar ─────────────────────────────────────────────────
     if (action === 'finalizar') {
-      const correo = String(body.correo || body.email || '').toLowerCase();
-      const codigo = String(body.codigo || '').toUpperCase();
-      const perfilCompleto = body.perfilCompleto;
-      const notas = body.notas || '';
-      if (!correo || !codigo || !perfilCompleto) {
-        return res.status(400).json({ ok: false, error: 'correo, codigo y perfilCompleto requeridos' });
+      const { email, codigo, tipoInstitucion, perfilCompleto, notas } = body || {};
+      if (!email || !codigo || !tipoInstitucion || !perfilCompleto) {
+        return res.status(400).json({ ok: false, error: 'correo, codigo, tipoInstitucion y perfilCompleto requeridos' });
       }
 
-      let tipoInstitucion = String(body.tipoInstitucion || '').toLowerCase();
-      if (!tipoInstitucion) {
-        const meta = await rGet(K_USR(correo));
-        tipoInstitucion = String(meta?.tipoInstitucion || '').toLowerCase();
-      }
-
+      // Llamar a GAS de guardado final (ya probado en ReqBin)
       try {
-        const r = await fetchRetry(GAS.UPDATE, {
+        const r = await fetchTimeout(process.env.GAS_UPDATE_PROFILE_URL, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             modo: 'GUARDAR_PERFIL_FINAL',
-            email: correo,
-            codigo,
-            tipoInstitucion,
+            email,
+            codigo: String(codigo).toUpperCase(),
+            tipoInstitucion: String(tipoInstitucion).toLowerCase(),
             perfil: perfilCompleto,
-            notas
+            notas: notas || ''
           })
         }, 12000, 0);
+
         const j = await r.json().catch(() => ({}));
-        if (!j?.ok) throw new Error('GAS no confirmó guardado');
-        await telemetry({ usuario: correo, ms: Date.now() - t0, status: 'OK', detalle: 'finalizar' });
+        if (!j?.ok) throw new Error(j?.error || 'GAS no confirmó guardado');
+
+        await telemetry({ usuario: email, ms: Date.now() - t0, status: 'OK', detalle: 'finalizar' });
         return res.status(200).json({ ok: true, guardado: true });
+
       } catch (err) {
-        await rSet(K_BKP(correo), { email: correo, codigo, tipoInstitucion, perfilCompleto, notas, fecha: new Date().toISOString() }, TTL_BACKUP);
-        await telemetry({ usuario: correo, ms: Date.now() - t0, status: 'BKP', detalle: 'finalizar->backup' });
+        // Backup 24h en Redis para no perder datos
+        await rSet(K_BKP(email), { email, codigo, perfilCompleto, notas: notas || '', fecha: new Date().toISOString() }, TTL_24H);
+        await telemetry({ usuario: email, ms: Date.now() - t0, status: 'BKP', detalle: `finalizar->backup (${String(err?.message || err)})` });
         return res.status(200).json({ ok: true, guardado: false, backup: true });
       }
     }
 
+    // ── fallback ──────────────────────────────────────────────────
     return res.status(400).json({ ok: false, error: 'action inválida' });
 
   } catch (err) {
-    await telemetry({ usuario: body?.email || body?.correo || 'anon', ms: Date.now() - t0, status: 'ERR', detalle: String(err?.message || err) });
+    await telemetry({ usuario: body?.email || 'anon', ms: Date.now() - t0, status: 'ERR', detalle: String(err?.message || err) });
     const friendly = 'A veces la tecnología y yo no hablamos exactamente el mismo idioma y ocurren pequeñas fallas de comunicación. Reintentemos: si vuelve a pasar, cuéntame de nuevo en tus palabras qué te preocupa. Estoy contigo.';
     return res.status(500).json({ ok: false, error: 'Error interno', friendly });
   }
 }
-// ======================= FIN ORQUESTADOR =======================
