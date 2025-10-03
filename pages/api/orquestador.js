@@ -1,20 +1,7 @@
 // pages/api/orquestador.js
-// AUREA Orquestador — Registro, Login, Temas, Chat, Finalizar
-// Requiere (Vercel → Environment Variables):
-// FRONTEND_ORIGIN=https://www.positronconsulting.com
-// OPENAI_API_KEY=...
-// UPSTASH_REDIS_REST_URL=...         (opcional, pero recomendado)
-// UPSTASH_REDIS_REST_TOKEN=...       (opcional, pero recomendado)
-// SENDGRID_API_KEY=...               (opcional, solo si envías correos)
-// GAS_VERIFY_URL=...                 (VerificarCodigoYUsuario.gs — recibe {correo, codigo})
-// GAS_UPDATE_PROFILE_URL=...         (ActualizarCalificacion/Perfil — recibe { modo:'GUARDAR_PERFIL_FINAL', correo, codigo, perfil, notas })
-// GAS_LOGS_URL=...                   (registrarTokens.gs — { fecha, usuario, ... })
-// GAS_TEMAS_URL=...                  (OPCIONAL: Web App que devuelva { ok:true, temas:[...] })
-// GAS_HISTORIAL_URL=...              (guardarHistorial.gs — SOS, etc.)
-// GAS_TELEMETRIA_URL=...             (Telemetria.gs)
+// AUREA Orquestador — Registro, Login (con perfil base), Temas, Chat, Finalizar
 
 export default async function handler(req, res) {
-  // ---------- CORS ----------
   const ORIGIN = process.env.FRONTEND_ORIGIN || 'https://www.positronconsulting.com';
   res.setHeader('Access-Control-Allow-Origin', ORIGIN);
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -26,7 +13,7 @@ export default async function handler(req, res) {
   const body = req.body || {};
   const t0 = Date.now();
 
-  // ---------- Helpers ----------
+  // --- helpers ---
   const wait = (ms) => new Promise(r => setTimeout(r, ms));
   async function fetchTimeout(url, options = {}, timeoutMs = 12000, retries = 1, backoff = 500) {
     for (let i = 0; i <= retries; i++) {
@@ -45,21 +32,22 @@ export default async function handler(req, res) {
     }
   }
 
-  // ---------- GAS ----------
+  // --- env / GAS ---
   const GAS = {
     VERIFY: process.env.GAS_VERIFY_URL || '',
+    PERFIL: process.env.GAS_PERFIL_URL || '',              // ← NUEVO: perfil base por usuario
     UPDATE: process.env.GAS_UPDATE_PROFILE_URL || '',
     LOGS: process.env.GAS_LOGS_URL || '',
-    TEMAS: process.env.GAS_TEMAS_URL || '',
-    HIST: process.env.GAS_HISTORIAL_URL || '',
-    TEL: process.env.GAS_TELEMETRIA_URL || ''
+    TEMAS: process.env.GAS_TEMAS_URL || '',                // opcional (si no, usa fallback)
+    HIST: process.env.GAS_HISTORIAL_URL || '',             // opcional
+    TEL: process.env.GAS_TELEMETRIA_URL || ''              // opcional
   };
 
-  // ---------- Redis (Upstash) ----------
+  // --- Redis (Upstash) ---
   const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL || '';
   const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
-  const TTL_MAIN = 60 * 60;        // 60 min
-  const TTL_BACKUP = 24 * 60 * 60; // 24 h
+  const TTL_MAIN = 3600;        // 60 min
+  const TTL_BACKUP = 86400;     // 24 h
 
   async function rGet(key) {
     if (!REDIS_URL || !REDIS_TOKEN) return null;
@@ -70,31 +58,29 @@ export default async function handler(req, res) {
     if (j?.result == null) return null;
     try { return JSON.parse(j.result); } catch { return j.result; }
   }
-  async function rSet(key, value, ttlSec = TTL_MAIN) {
+  async function rSet(key, value, ttl = TTL_MAIN) {
     if (!REDIS_URL || !REDIS_TOKEN) return false;
     const payload = typeof value === 'string' ? value : JSON.stringify(value);
     await fetch(`${REDIS_URL}/set/${encodeURIComponent(key)}/${encodeURIComponent(payload)}`, {
       method: 'POST', headers: { Authorization: `Bearer ${REDIS_TOKEN}` }
     });
-    await fetch(`${REDIS_URL}/expire/${encodeURIComponent(key)}/${ttlSec}`, {
+    await fetch(`${REDIS_URL}/expire/${encodeURIComponent(key)}/${ttl}`, {
       method: 'POST', headers: { Authorization: `Bearer ${REDIS_TOKEN}` }
     });
     return true;
   }
 
-  // ---------- Keys ----------
+  // --- keys ---
   const K_LIC = (codigo) => `lic:${String(codigo || '').toUpperCase()}`;
   const K_USR = (correo) => `usr:${String(correo || '').toLowerCase()}`;
   const K_TEM = (tipo) => `temas:${String(tipo || '').toLowerCase()}`;
   const K_BKP = (correo) => `bkpperfil:${String(correo || '').toLowerCase()}`;
 
-  // ---------- Telemetría / Logs ----------
+  // --- telemetría y logs ---
   async function telemetry({ usuario, ms, status, detalle }) {
     if (!GAS.TEL) return;
     const payload = { fecha: new Date().toISOString(), usuario: usuario || 'anon', ruta: `orq/${action || 'none'}`, ms, status, detalle: String(detalle || '') };
-    try {
-      await fetchTimeout(GAS.TEL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }, 12000, 1);
-    } catch {}
+    try { await fetchTimeout(GAS.TEL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }, 12000, 1); } catch {}
   }
   async function logTokens({ usuario, institucion, usage, costoUSD }) {
     if (!GAS.LOGS || !usage) return;
@@ -107,12 +93,10 @@ export default async function handler(req, res) {
       totalTokens: usage.total_tokens || 0,
       costoUSD: Number(costoUSD || 0)
     };
-    try {
-      await fetchTimeout(GAS.LOGS, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }, 12000, 1);
-    } catch {}
+    try { await fetchTimeout(GAS.LOGS, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }, 12000, 1); } catch {}
   }
 
-  // ---------- Fallback de Temas (define aquí tus 11 por institución o via ENV) ----------
+  // --- fallback de temas (ajústalo o usa ENV DEFAULT_TEMAS_*) ---
   const DEFAULT_TEMAS = {
     social: (process.env.DEFAULT_TEMAS_SOCIAL || 'Ansiedad|Depresión|Estrés|Autoestima|Relaciones|Duelo|Ira|Hábitos|Sueño|Motivación|Comunicación')
       .split('|').map(s => s.trim()).filter(Boolean),
@@ -124,23 +108,20 @@ export default async function handler(req, res) {
 
   async function obtenerTemas(tipoInstitucion) {
     const key = K_TEM(tipoInstitucion);
-    // cache
     try {
       const cached = await rGet(key);
       if (Array.isArray(cached) && cached.length) return cached;
     } catch {}
 
-    // GAS (si tu Web App devuelve { ok:true, temas:[...] })
+    // Intentar GAS (si tu Web App devuelve { ok:true, temas:[...] })
     try {
       if (GAS.TEMAS) {
         const r = await fetchTimeout(GAS.TEMAS, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ tipoInstitucion })
         }, 12000, 1);
-        let data = await r.json().catch(() => ({}));
-        let lista = [];
-        if (Array.isArray(data?.temas)) lista = data.temas;
-        // normaliza
+        const data = await r.json().catch(() => ({}));
+        let lista = Array.isArray(data?.temas) ? data.temas : [];
         lista = (lista || []).map(x => String(x || '').trim()).filter(Boolean);
         if (lista.length) {
           await rSet(key, lista, TTL_MAIN).catch(()=>{});
@@ -155,7 +136,7 @@ export default async function handler(req, res) {
     return fb;
   }
 
-  // ---------- OpenAI ----------
+  // --- OpenAI ---
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
   const OPENAI_COST = Number(process.env.OPENAI_COST_PER_TOKEN_USD || '0.000005');
 
@@ -222,7 +203,7 @@ Instrucciones clínicas (OBLIGATORIAS):
     return { json, usage, costo };
   }
 
-  // ---------- Utilidades de negocio ----------
+  // --- negocio ---
   function ema6040(actual, nuevo) {
     const a = Number(actual || 0);
     const n = Math.max(0, Math.min(100, Number(nuevo || 0)));
@@ -237,8 +218,8 @@ Instrucciones clínicas (OBLIGATORIAS):
     return out;
   }
 
-  // ---------- GAS wrappers ----------
-  async function verificarCodigoUsuario({ correo, codigo }) {
+  // --- wrappers GAS ---
+  async function gasVerificar({ correo, codigo }) {
     if (!GAS.VERIFY) throw new Error('GAS_VERIFY_URL no configurado');
     const r = await fetchTimeout(GAS.VERIFY, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -246,7 +227,15 @@ Instrucciones clínicas (OBLIGATORIAS):
     }, 12000, 2);
     return r.json();
   }
-  async function actualizarPerfilGAS(payload) {
+  async function gasPerfil({ correo, tipoInstitucion }) {
+    if (!GAS.PERFIL) throw new Error('GAS_PERFIL_URL no configurado');
+    const r = await fetchTimeout(GAS.PERFIL, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ correo, tipoInstitucion })
+    }, 12000, 2);
+    return r.json();
+  }
+  async function gasUpdate(payload) {
     if (!GAS.UPDATE) throw new Error('GAS_UPDATE_PROFILE_URL no configurado');
     const r = await fetchTimeout(GAS.UPDATE, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -256,17 +245,18 @@ Instrucciones clínicas (OBLIGATORIAS):
   }
 
   try {
-    // ---------- version (diagnóstico rápido) ----------
+    // -------- version --------
     if (action === 'version') {
       return res.status(200).json({
         ok: true,
         flags: {
           FRONTEND_ORIGIN: !!process.env.FRONTEND_ORIGIN,
-          OPENAI_API_KEY: !!OPENAI_API_KEY,
+          OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
           UPSTASH_URL: !!REDIS_URL,
           UPSTASH_TOKEN: !!REDIS_TOKEN,
           SENDGRID: !!process.env.SENDGRID_API_KEY,
           GAS_VERIFY: !!GAS.VERIFY,
+          GAS_PERFIL: !!GAS.PERFIL,
           GAS_UPDATE: !!GAS.UPDATE,
           GAS_LOGS: !!GAS.LOGS,
           GAS_TEMAS: !!GAS.TEMAS,
@@ -277,80 +267,88 @@ Instrucciones clínicas (OBLIGATORIAS):
       });
     }
 
-    // ---------- registro ----------
-    // Nota: tu GAS de verificación exige {correo,codigo}. En registro NO tienes correo.
-    // Implementamos un flujo tolerante: inferimos tipo por heurística y/o cache de licencia.
+    // -------- registro --------
     if (action === 'registro') {
       const { codigo } = body || {};
       if (!codigo) return res.status(400).json({ ok: false, error: 'codigo requerido' });
 
-      // Intenta recuperar de caché si ya se hizo login antes y quedó la licencia.
+      // Heurística tolerante sin correo: inferir tipo por patrón de código o 'social' por defecto
       const licCache = await rGet(K_LIC(codigo)) || {};
       let tipo = String(licCache.tipoInstitucion || '').toLowerCase();
-      let institucion = licCache.institucion || '';
-      let correoSOS = licCache.correoSOS || '';
-
-      // Heurística mínima si no hay cache
       if (!tipo) {
         const upper = String(codigo).toUpperCase();
         if (/_EMP\b/.test(upper) || /EMPRESA/i.test(upper)) tipo = 'empresa';
         else if (/_SOC\b/.test(upper) || /SOCIAL/i.test(upper)) tipo = 'social';
-        else if (/_EDU\b/.test(upper) || /EDU/i.test(upper) || /EDUC/i.test(upper)) tipo = 'educacion';
+        else if (/_EDU\b/.test(upper) || /EDU|EDUC/i.test(upper)) tipo = 'educacion';
+        else tipo = 'social';
       }
 
-      // Si aún no tenemos tipo, manda social por defecto (evitas bloqueo en UX)
-      if (!tipo) tipo = 'social';
-
-      // precalienta temas (no bloqueante)
+      // Warm temas
       try { await obtenerTemas(tipo); } catch {}
 
-      // Respuesta tipo “licencia”
       const licencia = {
         codigo: String(codigo).toUpperCase(),
         activo: true,
         disponibles: null,
         tipoInstitucion: tipo,
-        correoSOS,
-        institucion
+        correoSOS: licCache.correoSOS || '',
+        institucion: licCache.institucion || ''
       };
       await rSet(K_LIC(codigo), licencia, TTL_MAIN).catch(()=>{});
       return res.status(200).json({ ok: true, licencia });
     }
 
-    // ---------- login ----------
+    // -------- login (con perfil base) --------
     if (action === 'login') {
       const { email, codigo } = body || {};
       if (!email || !codigo) return res.status(400).json({ ok: false, error: 'correo y codigo requeridos' });
 
-      // GAS verificar (usa 'correo', no 'email')
-      const ver = await verificarCodigoUsuario({ correo: email, codigo });
+      // 1) verificar acceso
+      const ver = await gasVerificar({ correo: email, codigo });
       if (!ver?.ok || !ver?.acceso) {
         return res.status(403).json({ ok: false, error: ver?.motivo || 'Acceso denegado' });
       }
 
+      const tipoInstitucion = String(ver?.tipoInstitucion || '').toLowerCase();
+      const institucion = ver?.institucion || '';
       const lic = {
         codigo: String(codigo).toUpperCase(),
         activo: true,
         disponibles: null,
-        tipoInstitucion: ver?.tipoInstitucion || '',
+        tipoInstitucion,
         correoSOS: ver?.correoSOS || '',
-        institucion: ver?.institucion || ''
+        institucion
       };
       await rSet(K_LIC(codigo), lic, TTL_MAIN).catch(()=>{});
 
-      // precalienta temas (tolerante)
-      if (lic.tipoInstitucion) { try { await obtenerTemas(lic.tipoInstitucion); } catch {} }
+      // 2) traer perfil base (temas+calificaciones) desde GAS_PERFIL
+      let perfilBase = {};
+      let temas = [];
+      try {
+        const p = await gasPerfil({ correo: email, tipoInstitucion });
+        if (p?.ok) {
+          temas = Array.isArray(p.temas) ? p.temas : [];
+          perfilBase = (p.perfil && typeof p.perfil === 'object') ? p.perfil : {};
+        }
+      } catch {}
+
+      // fallback temas para no romper
+      if (!Array.isArray(temas) || !temas.length) {
+        temas = await obtenerTemas(tipoInstitucion);
+      }
 
       return res.status(200).json({
         ok: true,
         acceso: true,
         usuario: ver?.usuario || {},
-        institucion: lic.institucion,
-        tipoInstitucion: lic.tipoInstitucion
+        institucion,
+        tipoInstitucion,
+        temas,
+        perfilBase
       });
     }
 
-    // ---------- temas ----------
+    // -------- temas --------
     if (action === 'temas') {
       const { tipoInstitucion } = body || {};
       if (!tipoInstitucion) return res.status(400).json({ ok: false, error: 'tipoInstitucion requerido' });
@@ -358,12 +356,12 @@ Instrucciones clínicas (OBLIGATORIAS):
       return res.status(200).json({ ok: true, temas });
     }
 
-    // ---------- chat ----------
+    // -------- chat --------
     if (action === 'chat') {
       const { email, nombre, codigo, tipoInstitucion, mensaje, perfilActual } = body || {};
       if (!mensaje || !tipoInstitucion) return res.status(400).json({ ok: false, error: 'mensaje y tipoInstitucion requeridos' });
 
-      const temas = await obtenerTemas(tipoInstitucion); // puede venir de GAS o fallback
+      const temas = await obtenerTemas(tipoInstitucion);
       const prompt = buildPrompt({ nombre, mensaje, temas });
 
       const { json, usage, costo } = await callOpenAI({ prompt });
@@ -375,11 +373,10 @@ Instrucciones clínicas (OBLIGATORIAS):
       const SOS = String(json?.SOS || 'OK').toUpperCase() === 'ALERTA' ? 'ALERTA' : 'OK';
       const mensajeUsuario = String(json?.mensajeUsuario || '').trim();
 
-      // Perfil sugerido (EMA 60/40) solo si tema ∈ temas y porcentaje ≥ 60
+      // EMA 60/40 sólo si tema válido y porcentaje >= 60
       const perfilNuevo = { ...(perfilActual || {}) };
       let notas = '';
       const temaValido = temas.includes(tema);
-
       if (!temaValido) {
         if (tema && /^Otro:/i.test(tema)) notas = tema;
         else if (tema) notas = `Otro: ${tema}`;
@@ -389,7 +386,6 @@ Instrucciones clínicas (OBLIGATORIAS):
         perfilNuevo[tema] = ema6040(actual, sugerida);
       }
 
-      // SOS → historial (opcional)
       if (SOS === 'ALERTA' && GAS.HIST) {
         try {
           await fetchTimeout(GAS.HIST, {
@@ -420,14 +416,14 @@ Instrucciones clínicas (OBLIGATORIAS):
       });
     }
 
-    // ---------- finalizar ----------
+    // -------- finalizar --------
     if (action === 'finalizar') {
       const { correo, codigo, perfilCompleto, notas } = body || {};
       if (!correo || !codigo || !perfilCompleto) {
         return res.status(400).json({ ok: false, error: 'correo, codigo y perfilCompleto requeridos' });
       }
       try {
-        const r = await actualizarPerfilGAS({
+        const r = await gasUpdate({
           modo: 'GUARDAR_PERFIL_FINAL',
           correo,
           codigo: String(codigo).toUpperCase(),
@@ -438,14 +434,13 @@ Instrucciones clínicas (OBLIGATORIAS):
         await telemetry({ usuario: correo, ms: Date.now() - t0, status: 'OK', detalle: 'finalizar' });
         return res.status(200).json({ ok: true, guardado: true });
       } catch (err) {
-        // Backup en Redis 24h
         await rSet(K_BKP(correo), { correo, codigo, perfilCompleto, notas: notas || '', fecha: new Date().toISOString() }, TTL_BACKUP).catch(()=>{});
         await telemetry({ usuario: correo, ms: Date.now() - t0, status: 'BKP', detalle: 'finalizar->backup' });
         return res.status(200).json({ ok: true, guardado: false, backup: true });
       }
     }
 
-    // ---------- default ----------
+    // -------- default --------
     return res.status(400).json({ ok: false, error: 'action inválida' });
 
   } catch (err) {
@@ -454,3 +449,4 @@ Instrucciones clínicas (OBLIGATORIAS):
     return res.status(500).json({ ok: false, error: 'Error interno', friendly });
   }
 }
+
