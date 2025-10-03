@@ -4,8 +4,9 @@
 
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'https://www.positronconsulting.com';
 
-// ⚠️ LLAMAMOS SIEMPRE AL GAS DIRECTO AQUÍ (evita loops)
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbyeHkmygT0b5yLEZDkewnfp-dkWyPbu9yTPvYg6Q16Vbboam4-MN8w-PBlyLDPlU9zEuA/exec';
+// 🔒 Siempre directo al GAS (sin loop)
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbwDMJb1IJ5H-rFOqg2F- PMQKtUclaD5Z7pFPAraeHpE9VB8srzuAtV4ui9Gb9SnlzDgmA/exec';
+
 
 // Upstash Redis REST (opcional: si no está configurado, seguimos sin caché)
 const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL || '';
