@@ -1,78 +1,134 @@
-// pages/api/cache/verificar-usuario.js
-// Proxy con caché en memoria hacia GAS_VER_URL (+ CORS + timeout + guardarraíl de código)
+// ✅ pages/api/cache/verificar-usuario.js
+// Proxy robusto hacia GAS (sin bucles), con caché Upstash opcional (60s), CORS y GET "pong".
+// Respuesta normalizada: { ok, acceso, yaRegistrado, usuario, institucion, tipoInstitucion, correoSOS }
 
-// ⚙️ Leer URL de GAS desde variable de entorno (seguro y flexible)
-const GAS_VER_URL = process.env.AUREA_GAS_VERIFICAR_USUARIO_URL;
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'https://www.positronconsulting.com';
 
-const userCache = new Map(); // key -> { data, exp }
-const TTL_MS = 60 * 1000; // 60s de caché en memoria
+// ⚠️ LLAMAMOS SIEMPRE AL GAS DIRECTO AQUÍ (evita loops)
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbyeHkmygT0b5yLEZDkewnfp-dkWyPbu9yTPvYg6Q16Vbboam4-MN8w-PBlyLDPlU9zEuA/exec';
 
-function key(correo, codigo) { return `${correo.toLowerCase()}::${codigo.toUpperCase()}`; }
-function now() { return Date.now(); }
+// Upstash Redis REST (opcional: si no está configurado, seguimos sin caché)
+const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL || '';
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
+const CACHE_TTL_S = parseInt(process.env.CACHE_TTL_SECONDS || '60', 10); // 60s por default
 
-async function fetchJSON(url, body, timeoutMs = 9000) {
-  const ctrl = new AbortController();
-  const id = setTimeout(() => ctrl.abort('timeout'), timeoutMs);
+function setCORS(res) {
+  res.setHeader('Access-Control-Allow-Origin', FRONTEND_ORIGIN);
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS, GET');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+}
+
+function json(res, status, obj) {
+  res.status(status).json(obj);
+}
+
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const id = setTimeout(() => reject(new Error('TIMEOUT')), ms);
+    promise
+      .then(v => { clearTimeout(id); resolve(v); })
+      .catch(e => { clearTimeout(id); reject(e); });
+  });
+}
+
+async function redisGet(key) {
+  if (!REDIS_URL || !REDIS_TOKEN) return null;
   try {
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body || {}),
-      signal: ctrl.signal
+    const r = await fetch(`${REDIS_URL}/get/${encodeURIComponent(key)}`, {
+      headers: { Authorization: `Bearer ${REDIS_TOKEN}` }
     });
-    const text = await r.text();
-    let json = null; try { json = JSON.parse(text); } catch (_) {}
-    return { okHTTP: r.ok, status: r.status, text, json };
-  } catch (err) {
-    return { okHTTP: false, status: 0, text: String(err), json: null };
-  } finally {
-    clearTimeout(id);
-  }
+    if (!r.ok) return null;
+    const j = await r.json().catch(() => null);
+    if (!j || typeof j.result !== 'string' || j.result === 'null') return null;
+    try { return JSON.parse(j.result); } catch { return null; }
+  } catch { return null; }
+}
+
+async function redisSetEx(key, value, ttlSec) {
+  if (!REDIS_URL || !REDIS_TOKEN) return;
+  try {
+    const body = new URLSearchParams();
+    body.set('value', JSON.stringify(value));
+    body.set('ex', String(ttlSec));
+    await fetch(`${REDIS_URL}/set/${encodeURIComponent(key)}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${REDIS_TOKEN}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body
+    });
+  } catch { /* best effort */ }
 }
 
 export default async function handler(req, res) {
-  // 🔐 CORS
-  res.setHeader('Access-Control-Allow-Origin', 'https://www.positronconsulting.com');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  setCORS(res);
+
   if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'POST') return res.status(405).json({ ok: false, acceso: false, motivo: 'Method not allowed' });
+
+  // Para pruebas/curiosidad sin ensuciar logs
+  if (req.method === 'GET') {
+    return json(res, 200, { ok: true, ping: 'verificar-usuario', method: 'GET' });
+  }
+
+  if (req.method !== 'POST') {
+    return json(res, 405, { ok: false, motivo: 'Método no permitido' });
+  }
 
   const correo = String(req.body?.correo || '').trim().toLowerCase();
   const codigo = String(req.body?.codigo || '').trim().toUpperCase();
-  if (!correo || !codigo) {
-    return res.status(200).json({ ok: false, acceso: false, motivo: 'Correo y código requeridos' });
+
+  if (!correo || !codigo || !correo.includes('@')) {
+    return json(res, 200, { ok: false, acceso: false, motivo: 'Parámetros inválidos' });
   }
 
-  const k = key(correo, codigo);
-  const cached = userCache.get(k);
-  if (cached && cached.exp > now()) {
-    res.setHeader('AUREA-Cache', 'HIT');
-    return res.status(200).json(cached.data);
+  const cacheKey = `verifUsuario:${correo}:${codigo}`;
+  // 1) Cache (si hay Upstash)
+  const cached = await redisGet(cacheKey);
+  if (cached && typeof cached === 'object') {
+    return json(res, 200, cached);
   }
 
-  // 🚀 Llamar a GAS
-  const r = await fetchJSON(GAS_VER_URL, { correo, codigo }, 9000);
-  if (!r.okHTTP || !r.json) {
-    return res.status(200).json({
-      ok: false,
-      acceso: false,
-      motivo: `Fallo verificación (${r.status})`,
-      error: r.text || ''
-    });
+  // 2) Llamar a GAS directo (sin riesgo de loop)
+  try {
+    const r = await withTimeout(
+      fetch(GAS_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ correo, codigo })
+      }),
+      10000
+    );
+
+    const text = await r.text().catch(() => '');
+    let data = null; try { data = text ? JSON.parse(text) : null; } catch {}
+
+    if (!r.ok) {
+      const out = { ok: false, acceso: false, motivo: `Fallo verificación (${r.status})`, error: text?.slice(0,200) };
+      return json(res, 200, out);
+    }
+    if (!data || data.ok !== true) {
+      const out = { ok: false, acceso: false, motivo: 'Respuesta inválida de GAS' };
+      return json(res, 200, out);
+    }
+
+    const out = {
+      ok: true,
+      acceso: data.acceso === true,
+      yaRegistrado: !!data.yaRegistrado,
+      usuario: data.usuario || null,
+      institucion: data.institucion || null,
+      tipoInstitucion: data.tipoInstitucion || null,
+      correoSOS: data.correoSOS || null
+    };
+
+    // 3) Guardar en caché 60s (si hay Upstash)
+    await redisSetEx(cacheKey, out, CACHE_TTL_S);
+
+    return json(res, 200, out);
+  } catch (err) {
+    const msg = String(err?.message || err);
+    const out = { ok: false, acceso: false, motivo: (msg === 'TIMEOUT' ? 'Timeout verificar-usuario (10s)' : 'Error verificar-usuario'), error: msg };
+    return json(res, 200, out);
   }
-
-  const resp = r.json || {};
-
-  // 🛡️ Guardarraíl: si GAS dice acceso:true pero el código real del usuario ≠ ingresado → forzar acceso:false
-  const userCode = String(resp?.usuario?.codigo || '').trim().toUpperCase();
-  if (resp?.acceso === true && userCode && userCode !== codigo) {
-    resp.acceso = false;
-    resp.motivo = 'El código no corresponde a este usuario';
-  }
-
-  userCache.set(k, { data: resp, exp: now() + TTL_MS });
-  res.setHeader('AUREA-Cache', cached ? 'STALE' : 'MISS');
-  return res.status(200).json(resp);
 }
-
