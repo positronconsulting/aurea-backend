@@ -1,6 +1,9 @@
 // pages/api/orquestador.js
-// AUREA Orquestador — Registro, Login (con perfil base), Temas, Chat, Finalizar
+// ======================= AUREA ORQUESTADOR — FINAL =======================
+// CORS fijo, GAS con 'correo', Hedge de OpenAI (dos llamadas en paralelo con timeout),
+// JSON estricto, 11 temas, EMA 60/40 con umbral 60, backups y telemetría.
 
+// ------------------ CORS ------------------
 export default async function handler(req, res) {
   const ORIGIN = process.env.FRONTEND_ORIGIN || 'https://www.positronconsulting.com';
   res.setHeader('Access-Control-Allow-Origin', ORIGIN);
@@ -9,79 +12,77 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Método no permitido' });
 
-  const { action } = (req.query || {});
-  const body = req.body || {};
   const t0 = Date.now();
+  const action = String((req.query || {}).action || '').trim().toLowerCase();
+  const body = req.body || {};
+  const routeLabel = `orq/${action || 'none'}`;
 
-  // --- helpers ---
-  const wait = (ms) => new Promise(r => setTimeout(r, ms));
-  async function fetchTimeout(url, options = {}, timeoutMs = 12000, retries = 1, backoff = 500) {
+  // ------------------ Helpers base ------------------
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+  async function fetchTimeout(url, options = {}, timeoutMs = 12000) {
+    const ctrl = new AbortController();
+    const id = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const r = await fetch(url, { ...options, signal: ctrl.signal });
+      clearTimeout(id);
+      return r;
+    } catch (e) {
+      clearTimeout(id);
+      throw e;
+    }
+  }
+  async function fetchRetry(url, options, timeoutMs, retries = 1, backoffMs = 500) {
+    let lastErr;
     for (let i = 0; i <= retries; i++) {
-      const ctrl = new AbortController();
-      const id = setTimeout(() => ctrl.abort(), timeoutMs);
       try {
-        const r = await fetch(url, { ...options, signal: ctrl.signal });
-        clearTimeout(id);
+        const r = await fetchTimeout(url, options, timeoutMs);
         if (!r.ok && (r.status >= 500 || r.status === 429)) throw new Error(`HTTP ${r.status}`);
         return r;
       } catch (e) {
-        clearTimeout(id);
-        if (i === retries) throw e;
-        await wait(backoff * Math.pow(2, i));
+        lastErr = e;
+        if (i < retries) await sleep(backoffMs * Math.pow(2, i));
       }
     }
+    throw lastErr;
   }
 
-  // --- env / GAS ---
-  const GAS = {
-    VERIFY: process.env.GAS_VERIFY_URL || '',
-    PERFIL: process.env.GAS_PERFIL_URL || '',              // ← NUEVO: perfil base por usuario
-    UPDATE: process.env.GAS_UPDATE_PROFILE_URL || '',
-    LOGS: process.env.GAS_LOGS_URL || '',
-    TEMAS: process.env.GAS_TEMAS_URL || '',                // opcional (si no, usa fallback)
-    HIST: process.env.GAS_HISTORIAL_URL || '',             // opcional
-    TEL: process.env.GAS_TELEMETRIA_URL || ''              // opcional
-  };
-
-  // --- Redis (Upstash) ---
-  const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL || '';
-  const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
-  const TTL_MAIN = 3600;        // 60 min
-  const TTL_BACKUP = 86400;     // 24 h
-
+  // ------------------ Redis (Upstash) ------------------
+  const REDIS_URL = process.env.UPSTASH_REDIS_REST_URL;
+  const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+  const TTL_MAIN = 60 * 60;         // 60 min
+  const TTL_BACKUP = 24 * 60 * 60;  // 24h
   async function rGet(key) {
     if (!REDIS_URL || !REDIS_TOKEN) return null;
-    const r = await fetch(`${REDIS_URL}/get/${encodeURIComponent(key)}`, {
-      headers: { Authorization: `Bearer ${REDIS_TOKEN}` }
-    });
+    const r = await fetch(`${REDIS_URL}/get/${encodeURIComponent(key)}`, { headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
     const j = await r.json().catch(() => ({}));
     if (j?.result == null) return null;
     try { return JSON.parse(j.result); } catch { return j.result; }
   }
-  async function rSet(key, value, ttl = TTL_MAIN) {
+  async function rSet(key, value, ttlSec = TTL_MAIN) {
     if (!REDIS_URL || !REDIS_TOKEN) return false;
     const payload = typeof value === 'string' ? value : JSON.stringify(value);
-    await fetch(`${REDIS_URL}/set/${encodeURIComponent(key)}/${encodeURIComponent(payload)}`, {
-      method: 'POST', headers: { Authorization: `Bearer ${REDIS_TOKEN}` }
-    });
-    await fetch(`${REDIS_URL}/expire/${encodeURIComponent(key)}/${ttl}`, {
-      method: 'POST', headers: { Authorization: `Bearer ${REDIS_TOKEN}` }
-    });
+    await fetch(`${REDIS_URL}/set/${encodeURIComponent(key)}/${encodeURIComponent(payload)}`, { method: 'POST', headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
+    if (ttlSec) await fetch(`${REDIS_URL}/expire/${encodeURIComponent(key)}/${ttlSec}`, { method: 'POST', headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
     return true;
   }
 
-  // --- keys ---
-  const K_LIC = (codigo) => `lic:${String(codigo || '').toUpperCase()}`;
-  const K_USR = (correo) => `usr:${String(correo || '').toLowerCase()}`;
-  const K_TEM = (tipo) => `temas:${String(tipo || '').toLowerCase()}`;
-  const K_BKP = (correo) => `bkpperfil:${String(correo || '').toLowerCase()}`;
+  // ------------------ GAS & Email ------------------
+  const GAS = {
+    VERIFY: process.env.GAS_VERIFY_URL,             // verificarCodigoYUsuario.gs (usa 'correo')
+    PERFIL: process.env.GAS_PERFIL_URL,             // perfilUsuario.gs (temas E–O + perfil base)
+    UPDATE: process.env.GAS_UPDATE_PROFILE_URL,     // actualizarCalificacion / guardar perfil final
+    LOGS: process.env.GAS_LOGS_URL,                 // registrarTokens.gs
+    TEMAS: process.env.GAS_TEMAS_URL,               // temasInstitucion (métricas)
+    HIST: process.env.GAS_HISTORIAL_URL,            // guardarHistorial (SOS)
+    TEL: process.env.GAS_TELEMETRIA_URL             // Telemetria.gs
+  };
 
-  // --- telemetría y logs ---
   async function telemetry({ usuario, ms, status, detalle }) {
     if (!GAS.TEL) return;
-    const payload = { fecha: new Date().toISOString(), usuario: usuario || 'anon', ruta: `orq/${action || 'none'}`, ms, status, detalle: String(detalle || '') };
-    try { await fetchTimeout(GAS.TEL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }, 12000, 1); } catch {}
+    const payload = { fecha: new Date().toISOString(), usuario: usuario || 'anon', ruta: routeLabel, ms, status, detalle: String(detalle || '') };
+    try { await fetchRetry(GAS.TEL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }, 8000, 0); } catch {}
   }
+
   async function logTokens({ usuario, institucion, usage, costoUSD }) {
     if (!GAS.LOGS || !usage) return;
     const payload = {
@@ -93,106 +94,87 @@ export default async function handler(req, res) {
       totalTokens: usage.total_tokens || 0,
       costoUSD: Number(costoUSD || 0)
     };
-    try { await fetchTimeout(GAS.LOGS, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }, 12000, 1); } catch {}
+    try { await fetchRetry(GAS.LOGS, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }, 8000, 0); } catch {}
   }
 
-  // --- fallback de temas (ajústalo o usa ENV DEFAULT_TEMAS_*) ---
-  const DEFAULT_TEMAS = {
-    social: (process.env.DEFAULT_TEMAS_SOCIAL || 'Ansiedad|Depresión|Estrés|Autoestima|Relaciones|Duelo|Ira|Hábitos|Sueño|Motivación|Comunicación')
-      .split('|').map(s => s.trim()).filter(Boolean),
-    empresa: (process.env.DEFAULT_TEMAS_EMPRESA || 'Burnout|Estrés laboral|Liderazgo|Trabajo en equipo|Comunicación|Productividad|Conflictos|Cambio|Motivación|Toma de decisiones|Gestión del tiempo')
-      .split('|').map(s => s.trim()).filter(Boolean),
-    educacion: (process.env.DEFAULT_TEMAS_EDUCACION || 'Ansiedad académica|Procrastinación|Hábitos de estudio|Sueño|Atención|Memoria|Autoeficacia|Relaciones|Bullying|Autocuidado|Motivación')
-      .split('|').map(s => s.trim()).filter(Boolean),
-  };
-
-  async function obtenerTemas(tipoInstitucion) {
-    const key = K_TEM(tipoInstitucion);
+  async function sendEmail({ to, subject, text }) {
+    const key = process.env.SENDGRID_API_KEY;
+    if (!key || !to) return false;
     try {
-      const cached = await rGet(key);
-      if (Array.isArray(cached) && cached.length) return cached;
-    } catch {}
-
-    // Intentar GAS (si tu Web App devuelve { ok:true, temas:[...] })
-    try {
-      if (GAS.TEMAS) {
-        const r = await fetchTimeout(GAS.TEMAS, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tipoInstitucion })
-        }, 12000, 1);
-        const data = await r.json().catch(() => ({}));
-        let lista = Array.isArray(data?.temas) ? data.temas : [];
-        lista = (lista || []).map(x => String(x || '').trim()).filter(Boolean);
-        if (lista.length) {
-          await rSet(key, lista, TTL_MAIN).catch(()=>{});
-          return lista;
-        }
-      }
-    } catch {}
-
-    // Fallback local
-    const fb = DEFAULT_TEMAS[String(tipoInstitucion || '').toLowerCase()] || [];
-    if (fb.length) await rSet(key, fb, TTL_MAIN).catch(()=>{});
-    return fb;
+      const r = await fetchRetry('https://api.sendgrid.com/v3/mail/send', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          personalizations: [{ to: [{ email: to }] }],
+          from: { email: 'no-reply@positronconsulting.com', name: 'AUREA' },
+          reply_to: { email: 'alfredo@positronconsulting.com', name: 'Alfredo' },
+          subject,
+          content: [{ type: 'text/plain', value: text }]
+        })
+      }, 8000, 0);
+      return r.ok;
+    } catch { return false; }
   }
 
-  // --- OpenAI ---
-  const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-  const OPENAI_COST = Number(process.env.OPENAI_COST_PER_TOKEN_USD || '0.000005');
+  // ------------------ Keys de cache ------------------
+  const K_LIC = (codigo) => `lic:${String(codigo || '').toUpperCase()}`;
+  const K_USR = (email) => `usr:${String(email || '').toLowerCase()}`;
+  const K_TEM = (tipo) => `temas:${String(tipo || '').toLowerCase()}`; // social|empresa|educacion
+  const K_BKP = (email) => `bkpperfil:${String(email || '').toLowerCase()}`;
+
+  // ------------------ OpenAI (hedge + JSON estricto) ------------------
+  const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+  const OPENAI_COST = Number(process.env.OPENAI_COST_PER_TOKEN_USD || '0.000005'); // opcional
+  const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
+  const OPENAI_MODEL = 'gpt-4o-mini';
 
   function buildPrompt({ nombre, mensaje, temas }) {
-    const lista = (Array.isArray(temas) && temas.length)
-      ? temas.join(', ')
-      : 'Ansiedad, Depresión, Burnout, Violencia Intrafamiliar, Aislamiento Social, Abuso sexual, Violencia de Género, Psicosis, Trastornos de Conducta, Consumo de Sustancias, Suicidio';
-
+    const lista = (Array.isArray(temas) && temas.length) ? temas.join(', ') : 'Ansiedad, Depresión, Burnout, Estrés, Comunicación, Trabajo en equipo, Productividad, Conflictos, Cambio, Motivación, Toma de decisiones';
     return `
-Eres AUREA, psicoterapeuta especializado en Terapia Cognitivo Conductual (TCC) y Neurociencia.
-
-Debes responder EXCLUSIVAMENTE en JSON válido con EXACTAMENTE estas claves:
+Eres AUREA, psicoterapeuta especializado en Terapia Cognitivo Conductual y Neurociencia.
+Debes RESPONDER EXCLUSIVAMENTE en JSON válido con EXACTAMENTE estas claves:
 {
-  "mensajeUsuario": "string",                // máximo 100 palabras. Tono profesional, cálido, empático pero que RETE (TCC + Neuro). Nunca complaciente.
-  "temaDetectado": "string",                 // elige 1 de la lista PERMITIDA o "Otro: <tema>"
-  "porcentaje": 0-100,                       // entero, confianza en la clasificación
-  "calificacionesPorTema": {                 // mapa con TODOS los 11 temas de la institución
+  "mensajeUsuario": "string",                // máx 100 palabras, profesional, empático PERO que rete (TCC)
+  "temaDetectado": "string",                 // elegir 1 de la lista PERMITIDA o "Otro: <tema>"
+  "porcentaje": 0-100,                       // entero (confianza sobre temaDetectado)
+  "calificacionesPorTema": {                 // mapa con los 11 temas de la institución
     "<Tema1>": 0-100,
-    "<Tema2>": 0-100,
-    "...": 0-100
+    "<Tema2>": 0-100
   },
-  "SOS": "OK" | "ALERTA"                     // "ALERTA" si riesgo agudo (suicidio, psicosis activa, violencia severa, consumo con riesgo inmediato)
+  "SOS": "OK" | "ALERTA"                     // "ALERTA" si hay riesgo agudo (ideación/plan/intento suicida, daño a terceros, psicosis activa, violencia severa, consumo con riesgo inmediato)
 }
 
 Contexto del usuario:
 - Nombre: ${nombre || 'Usuario'}
 - Mensaje: "${String(mensaje || '').replace(/"/g, '\\"')}"
 
-Lista de TEMAS PERMITIDOS:
+Temas PERMITIDOS (elige exactamente 1 para "temaDetectado"):
 ${lista}
 
-Instrucciones clínicas (OBLIGATORIAS):
-- Responde SOLO con el JSON, sin texto adicional.
-- "mensajeUsuario": máximo 100 palabras, estilo TCC y Neurociencia: directo, claro, empático y RETADOR.
-- "temaDetectado": siempre elegir 1 de la lista. Si no hay relación clínica fuerte, usar "Otro: <tema>".
-- "calificacionesPorTema": asigna SIEMPRE un entero entre 0–100 para cada tema (0 si no hay señales).
-- "porcentaje": tu mejor estimación clínica de confianza (entero).
-- "SOS": pon "ALERTA" si detectas riesgo inminente de suicidio, violencia o psicosis activa.
-- Evita frases cliché o placebo. Mantén precisión clínica, estilo profesional y acompañamiento real.
-- Si hay fallas de comunicación, recuerda amablemente que "a veces no hablamos el mismo idioma".
+Instrucciones clínicas y de estilo (OBLIGATORIAS):
+- Responde SOLO el JSON sin texto adicional, sin comentarios ni explicaciones fuera del JSON.
+- "mensajeUsuario": tono profesional TCC+Neuro, cálido pero NO complaciente; invita a insight y a un siguiente paso realista SOLO si es necesario.
+- Forzar mapeo a UNO de los temas PERMITIDOS. Si no hay mapeo clínicamente defendible, usar "Otro: <tema>".
+- "calificacionesPorTema": entero 0–100 para CADA uno de los 11 temas PERMITIDOS (0 si no presenta señales).
+- "porcentaje": mejor estimación (entero) de certeza sobre "temaDetectado".
+- "SOS": "ALERTA" ante riesgo agudo (criterios clínicos estándar). En tal caso, el "mensajeUsuario" debe ser más directivo pero con acompañamiento.
+- Mantén precisión clínica; evita clichés, promesas vacías y frases de placebo. Sé claro, directo y respetuoso.
 `.trim();
   }
 
-  async function callOpenAI({ prompt }) {
+  async function openAIOnce({ prompt, timeoutMs = 9000, temperature = 0.4 }) {
     const req = {
-      model: 'gpt-4o-mini',
+      model: OPENAI_MODEL,
       messages: [{ role: 'user', content: prompt }],
-      temperature: 0.4,
-      max_tokens: 600,
+      temperature,
+      max_tokens: 500,
       response_format: { type: 'json_object' }
     };
-    const r = await fetchTimeout('https://api.openai.com/v1/chat/completions', {
+    const r = await fetchTimeout(OPENAI_URL, {
       method: 'POST',
       headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(req)
-    }, 30000, 0);
+    }, timeoutMs);
     const data = await r.json().catch(() => ({}));
     if (!data?.choices?.[0]?.message?.content) throw new Error('Respuesta vacía de OpenAI');
     let json;
@@ -203,10 +185,19 @@ Instrucciones clínicas (OBLIGATORIAS):
     return { json, usage, costo };
   }
 
-  // --- negocio ---
+  // Hedge: dos llamadas en paralelo con timeouts distintos, devolvemos la PRIMERA válida.
+  async function callOpenAI_Hedge({ prompt }) {
+    // A: baja temperatura (más estable), timeout 9s
+    const pA = openAIOnce({ prompt, timeoutMs: 9000, temperature: 0.3 });
+    // B: temperatura 0.5 (por si A tropieza), timeout 12s
+    const pB = openAIOnce({ prompt, timeoutMs: 12000, temperature: 0.5 });
+
+    return await Promise.any([pA, pB]);
+  }
+
+  // ------------------ Utilidades de negocio ------------------
   function ema6040(actual, nuevo) {
-    const a = Number(actual || 0);
-    const n = Math.max(0, Math.min(100, Number(nuevo || 0)));
+    const a = Number(actual || 0), n = Math.max(0, Math.min(100, Number(nuevo || 0)));
     return Math.round(0.6 * a + 0.4 * n);
   }
   function normalizarCalifMap(temas, mapa) {
@@ -218,187 +209,216 @@ Instrucciones clínicas (OBLIGATORIAS):
     return out;
   }
 
-  // --- wrappers GAS ---
-  async function gasVerificar({ correo, codigo }) {
-    if (!GAS.VERIFY) throw new Error('GAS_VERIFY_URL no configurado');
-    const r = await fetchTimeout(GAS.VERIFY, {
+  // ------------------ Temas/Perfil desde GAS_PERFIL_URL ------------------
+  async function obtenerTemasYPerfil(tipoInstitucion, correo) {
+    const cacheKey = K_TEM(tipoInstitucion);
+    let temas = await rGet(cacheKey);
+    let perfil = null;
+
+    if (!Array.isArray(temas) || temas.length !== 11 || !perfil) {
+      const r = await fetchRetry(GAS.PERFIL, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ correo, tipoInstitucion })
+      }, 12000, 1);
+      const data = await r.json().catch(() => ({}));
+      if (!data?.ok || !Array.isArray(data.temas) || !data.temas.length) {
+        return { temas: [], perfil: {} };
+      }
+      temas = data.temas;
+      perfil = data.perfil || {};
+      await rSet(cacheKey, temas, TTL_MAIN);
+    }
+    return { temas, perfil: perfil || {} };
+  }
+
+  // ------------------ GAS calls ------------------
+  async function verificarCodigoUsuario({ email, codigo }) {
+    const r = await fetchRetry(GAS.VERIFY, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ correo, codigo })
-    }, 12000, 2);
+      // El GAS espera 'correo'
+      body: JSON.stringify({ correo: email, codigo })
+    }, 12000, 1);
     return r.json();
   }
-  async function gasPerfil({ correo, tipoInstitucion }) {
-    if (!GAS.PERFIL) throw new Error('GAS_PERFIL_URL no configurado');
-    const r = await fetchTimeout(GAS.PERFIL, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ correo, tipoInstitucion })
-    }, 12000, 2);
-    return r.json();
-  }
-  async function gasUpdate(payload) {
-    if (!GAS.UPDATE) throw new Error('GAS_UPDATE_PROFILE_URL no configurado');
-    const r = await fetchTimeout(GAS.UPDATE, {
+
+  async function actualizarGAS(payload) {
+    const r = await fetchRetry(GAS.UPDATE, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
-    }, 12000, 2);
+    }, 12000, 1);
     return r.json();
   }
 
+  // ------------------ Actions ------------------
   try {
-    // -------- version --------
+    // version
     if (action === 'version') {
-      return res.status(200).json({
-        ok: true,
-        flags: {
-          FRONTEND_ORIGIN: !!process.env.FRONTEND_ORIGIN,
-          OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
-          UPSTASH_URL: !!REDIS_URL,
-          UPSTASH_TOKEN: !!REDIS_TOKEN,
-          SENDGRID: !!process.env.SENDGRID_API_KEY,
-          GAS_VERIFY: !!GAS.VERIFY,
-          GAS_PERFIL: !!GAS.PERFIL,
-          GAS_UPDATE: !!GAS.UPDATE,
-          GAS_LOGS: !!GAS.LOGS,
-          GAS_TEMAS: !!GAS.TEMAS,
-          GAS_HIST: !!GAS.HIST,
-          GAS_TEL: !!GAS.TEL
-        },
-        now: new Date().toISOString()
-      });
+      const flags = {
+        FRONTEND_ORIGIN: !!process.env.FRONTEND_ORIGIN,
+        OPENAI_API_KEY: !!OPENAI_API_KEY,
+        UPSTASH_URL: !!REDIS_URL,
+        UPSTASH_TOKEN: !!REDIS_TOKEN,
+        SENDGRID: !!process.env.SENDGRID_API_KEY,
+        GAS_VERIFY: !!GAS.VERIFY,
+        GAS_PERFIL: !!GAS.PERFIL,
+        GAS_UPDATE: !!GAS.UPDATE,
+        GAS_LOGS: !!GAS.LOGS,
+        GAS_TEMAS: !!GAS.TEMAS,
+        GAS_HIST: !!GAS.HIST,
+        GAS_TEL: !!GAS.TEL
+      };
+      return res.status(200).json({ ok: true, flags, now: new Date().toISOString() });
     }
 
-    // -------- registro --------
+    // temas (diagnóstico)
+    if (action === 'temas') {
+      const { tipoInstitucion } = body || {};
+      if (!tipoInstitucion) return res.status(400).json({ ok: false, error: 'tipoInstitucion requerido' });
+      const { temas } = await obtenerTemasYPerfil(String(tipoInstitucion).toLowerCase(), 'diagnostic@aurea');
+      return res.status(200).json({ ok: true, temas });
+    }
+
+    // registro (ligero; valida código y precalienta temas)
     if (action === 'registro') {
       const { codigo } = body || {};
       if (!codigo) return res.status(400).json({ ok: false, error: 'codigo requerido' });
 
-      // Heurística tolerante sin correo: inferir tipo por patrón de código o 'social' por defecto
-      const licCache = await rGet(K_LIC(codigo)) || {};
-      let tipo = String(licCache.tipoInstitucion || '').toLowerCase();
-      if (!tipo) {
-        const upper = String(codigo).toUpperCase();
-        if (/_EMP\b/.test(upper) || /EMPRESA/i.test(upper)) tipo = 'empresa';
-        else if (/_SOC\b/.test(upper) || /SOCIAL/i.test(upper)) tipo = 'social';
-        else if (/_EDU\b/.test(upper) || /EDU|EDUC/i.test(upper)) tipo = 'educacion';
-        else tipo = 'social';
+      let lic = await rGet(K_LIC(codigo));
+      if (!lic) {
+        const ver = await verificarCodigoUsuario({ email: null, codigo });
+        if (!ver?.ok) return res.status(400).json({ ok: false, error: ver?.motivo || 'Código inválido' });
+        lic = {
+          codigo: String(codigo).toUpperCase(),
+          activo: ver?.codigoActivo ?? true,
+          disponibles: ver?.licenciasDisponibles ?? null,
+          tipoInstitucion: ver?.tipoInstitucion || null,
+          correoSOS: ver?.correoSOS || null,
+          institucion: ver?.institucion || null
+        };
+        await rSet(K_LIC(codigo), lic, TTL_MAIN);
       }
-
-      // Warm temas
-      try { await obtenerTemas(tipo); } catch {}
-
-      const licencia = {
-        codigo: String(codigo).toUpperCase(),
-        activo: true,
-        disponibles: null,
-        tipoInstitucion: tipo,
-        correoSOS: licCache.correoSOS || '',
-        institucion: licCache.institucion || ''
-      };
-      await rSet(K_LIC(codigo), licencia, TTL_MAIN).catch(()=>{});
-      return res.status(200).json({ ok: true, licencia });
+      if (lic?.tipoInstitucion) { try { await obtenerTemasYPerfil(lic.tipoInstitucion, 'preload@aurea'); } catch {} }
+      return res.status(200).json({ ok: true, licencia: lic });
     }
 
-    // -------- login (con perfil base) --------
+    // login
     if (action === 'login') {
       const { email, codigo } = body || {};
-      if (!email || !codigo) return res.status(400).json({ ok: false, error: 'correo y codigo requeridos' });
+      if (!email || !codigo) return res.status(400).json({ ok: false, error: 'email y codigo requeridos' });
 
-      // 1) verificar acceso
-      const ver = await gasVerificar({ correo: email, codigo });
-      if (!ver?.ok || !ver?.acceso) {
-        return res.status(403).json({ ok: false, error: ver?.motivo || 'Acceso denegado' });
-      }
+      const ver = await verificarCodigoUsuario({ email, codigo });
+      if (!ver?.ok || !ver?.acceso) return res.status(403).json({ ok: false, error: ver?.motivo || 'Acceso denegado' });
 
-      const tipoInstitucion = String(ver?.tipoInstitucion || '').toLowerCase();
-      const institucion = ver?.institucion || '';
+      const usuario = ver?.usuario || {};
       const lic = {
         codigo: String(codigo).toUpperCase(),
-        activo: true,
-        disponibles: null,
-        tipoInstitucion,
-        correoSOS: ver?.correoSOS || '',
-        institucion
+        activo: ver?.codigoActivo ?? true,
+        disponibles: ver?.licenciasDisponibles ?? null,
+        tipoInstitucion: ver?.tipoInstitucion || null,
+        correoSOS: ver?.correoSOS || null,
+        institucion: ver?.institucion || null
       };
-      await rSet(K_LIC(codigo), lic, TTL_MAIN).catch(()=>{});
+      await rSet(K_LIC(codigo), lic, TTL_MAIN);
+      await rSet(K_USR(email), {
+        nombre: usuario?.nombre || '',
+        edad: usuario?.edad || usuario?.fechaNacimiento || '',
+        institucion: lic.institucion,
+        tipoInstitucion: lic.tipoInstitucion,
+        correoSOS: lic.correoSOS,
+        correoEmergencia: usuario?.correoEmergencia || null
+      }, TTL_MAIN);
 
-      // 2) traer perfil base (temas+calificaciones) desde GAS_PERFIL
-      let perfilBase = {};
-      let temas = [];
-      try {
-        const p = await gasPerfil({ correo: email, tipoInstitucion });
-        if (p?.ok) {
-          temas = Array.isArray(p.temas) ? p.temas : [];
-          perfilBase = (p.perfil && typeof p.perfil === 'object') ? p.perfil : {};
-        }
-      } catch {}
+      // Temas + perfil base
+      const { temas, perfil } = await obtenerTemasYPerfil(String(lic.tipoInstitucion || '').toLowerCase(), email);
 
-      // fallback temas para no romper
-      if (!Array.isArray(temas) || !temas.length) {
-        temas = await obtenerTemas(tipoInstitucion);
-      }
+      // BG si test inicial no se ha enviado (AW)
+      const awMarcado = !!usuario?.testYaEnviado;
+      (async () => {
+        try {
+          if (!awMarcado) {
+            await actualizarGAS({ modo: 'ANALISIS_INICIAL', email, codigo: lic.codigo, tipoInstitucion: lic.tipoInstitucion });
+            const asunto = 'Bienvenido/a a AUREA. Este es el resultado de tu test.';
+            await sendEmail({ to: email, subject: asunto, text: 'Gracias por registrarte en AUREA. Procesamos tu test inicial.' });
+            if (lic.correoSOS) await sendEmail({ to: lic.correoSOS, subject: asunto, text: `Se procesó el test de ${email}` });
+            await sendEmail({ to: 'alfredo@positronconsulting.com', subject: asunto, text: `Se procesó el test de ${email}` });
+          }
+        } catch {}
+      })();
 
       return res.status(200).json({
         ok: true,
         acceso: true,
-        usuario: ver?.usuario || {},
-        institucion,
-        tipoInstitucion,
+        usuario: {
+          email,
+          nombre: usuario?.nombre || '',
+          edad: usuario?.edad || usuario?.fechaNacimiento || '',
+          institucion: lic.institucion,
+          tipoInstitucion: lic.tipoInstitucion,
+          correoSOS: lic.correoSOS,
+          correoEmergencia: usuario?.correoEmergencia || null,
+          perfilEmocional: null
+        },
         temas,
-        perfilBase
+        perfilBase: perfil
       });
     }
 
-    // -------- temas --------
-    if (action === 'temas') {
-      const { tipoInstitucion } = body || {};
-      if (!tipoInstitucion) return res.status(400).json({ ok: false, error: 'tipoInstitucion requerido' });
-      const temas = await obtenerTemas(tipoInstitucion);
-      return res.status(200).json({ ok: true, temas });
-    }
-
-    // -------- chat --------
+    // chat (OpenAI hedge; siempre respuesta de OpenAI)
     if (action === 'chat') {
-      const { email, nombre, codigo, tipoInstitucion, mensaje, perfilActual } = body || {};
+      const email = String(body.email || body.correo || '').toLowerCase();
+      const nombre = body.nombre || '';
+      const codigo = body.codigo || '';
+      const tipoInstitucion = String(body.tipoInstitucion || '').toLowerCase();
+      const mensaje = body.mensaje || '';
+      const perfilActual = body.perfilActual || {};
+
       if (!mensaje || !tipoInstitucion) return res.status(400).json({ ok: false, error: 'mensaje y tipoInstitucion requeridos' });
 
-      const temas = await obtenerTemas(tipoInstitucion);
+      // Lista de 11 temas (desde GAS_PERFIL)
+      const { temas } = await obtenerTemasYPerfil(tipoInstitucion, email || 'chat@aurea');
+      if (!Array.isArray(temas) || temas.length !== 11) return res.status(500).json({ ok: false, error: 'Temas inválidos' });
+
       const prompt = buildPrompt({ nombre, mensaje, temas });
 
-      const { json, usage, costo } = await callOpenAI({ prompt });
+      // Hedge: dos intentos paralelos, devolvemos el primero válido
+      const { json, usage, costo } = await callOpenAI_Hedge({ prompt }).catch(e => { throw e; });
       await logTokens({ usuario: email || 'anon', institucion: '', usage, costoUSD: costo });
 
-      const tema = String(json?.temaDetectado || '').trim();
+      // Normalización estricta
+      const temaDetectado = String(json?.temaDetectado || '').trim();
       const porcentaje = Math.max(0, Math.min(100, Number(json?.porcentaje || 0)));
-      const califMap = normalizarCalifMap(temas.length ? temas : Object.keys(json?.calificacionesPorTema || {}), json?.calificacionesPorTema);
+      const califMap = normalizarCalifMap(temas, json?.calificacionesPorTema || {});
       const SOS = String(json?.SOS || 'OK').toUpperCase() === 'ALERTA' ? 'ALERTA' : 'OK';
       const mensajeUsuario = String(json?.mensajeUsuario || '').trim();
 
-      // EMA 60/40 sólo si tema válido y porcentaje >= 60
+      // Perfil sugerido con EMA 60/40 si el tema es válido y %≥60
       const perfilNuevo = { ...(perfilActual || {}) };
       let notas = '';
-      const temaValido = temas.includes(tema);
+
+      const temaValido = temaDetectado && temas.includes(temaDetectado);
       if (!temaValido) {
-        if (tema && /^Otro:/i.test(tema)) notas = tema;
-        else if (tema) notas = `Otro: ${tema}`;
+        if (temaDetectado && /^Otro:/i.test(temaDetectado)) notas = temaDetectado;
+        else if (temaDetectado) notas = `Otro: ${temaDetectado}`;
       } else if (porcentaje >= 60) {
-        const actual = Number(perfilNuevo[tema] || 0);
-        const sugerida = Number(califMap[tema] || 0);
-        perfilNuevo[tema] = ema6040(actual, sugerida);
+        const actual = Number(perfilNuevo[temaDetectado] || 0);
+        const sugerida = Number(califMap[temaDetectado] || 0);
+        perfilNuevo[temaDetectado] = ema6040(actual, sugerida);
       }
 
+      // SOS → historial (no bloquea)
       if (SOS === 'ALERTA' && GAS.HIST) {
         try {
-          await fetchTimeout(GAS.HIST, {
+          await fetchRetry(GAS.HIST, {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               fecha: new Date().toISOString(),
               usuario: email || 'anon',
               mensaje,
-              tema: temaValido ? tema : 'N/A',
+              tema: temaValido ? temaDetectado : 'N/A',
               porcentaje,
               nota: notas || ''
             })
-          }, 12000, 1);
+          }, 8000, 0);
         } catch {}
       }
 
@@ -406,8 +426,8 @@ Instrucciones clínicas (OBLIGATORIAS):
 
       return res.status(200).json({
         ok: true,
-        mensajeUsuario: mensajeUsuario || 'Gracias por compartir. Estoy contigo.',
-        temaDetectado: temaValido ? tema : '',
+        mensajeUsuario: mensajeUsuario || 'Gracias por compartir.',
+        temaDetectado: temaValido ? temaDetectado : '',
         porcentaje,
         calificacionesPorTema: califMap,
         SOS,
@@ -416,31 +436,36 @@ Instrucciones clínicas (OBLIGATORIAS):
       });
     }
 
-    // -------- finalizar --------
+    // finalizar (acepta email o correo)
     if (action === 'finalizar') {
-      const { correo, codigo, perfilCompleto, notas } = body || {};
+      const correo = String(body.correo || body.email || '').toLowerCase();
+      const codigo = String(body.codigo || '').toUpperCase();
+      const perfilCompleto = body.perfilCompleto;
+      const notas = body.notas || '';
+
       if (!correo || !codigo || !perfilCompleto) {
         return res.status(400).json({ ok: false, error: 'correo, codigo y perfilCompleto requeridos' });
       }
+
       try {
-        const r = await gasUpdate({
+        const r = await actualizarGAS({
           modo: 'GUARDAR_PERFIL_FINAL',
-          correo,
-          codigo: String(codigo).toUpperCase(),
+          email: correo,
+          codigo,
           perfil: perfilCompleto,
-          notas: notas || ''
+          notas
         });
         if (!r?.ok) throw new Error('GAS no confirmó guardado');
         await telemetry({ usuario: correo, ms: Date.now() - t0, status: 'OK', detalle: 'finalizar' });
         return res.status(200).json({ ok: true, guardado: true });
       } catch (err) {
-        await rSet(K_BKP(correo), { correo, codigo, perfilCompleto, notas: notas || '', fecha: new Date().toISOString() }, TTL_BACKUP).catch(()=>{});
+        await rSet(K_BKP(correo), { email: correo, codigo, perfilCompleto, notas, fecha: new Date().toISOString() }, TTL_BACKUP);
         await telemetry({ usuario: correo, ms: Date.now() - t0, status: 'BKP', detalle: 'finalizar->backup' });
         return res.status(200).json({ ok: true, guardado: false, backup: true });
       }
     }
 
-    // -------- default --------
+    // action desconocida
     return res.status(400).json({ ok: false, error: 'action inválida' });
 
   } catch (err) {
@@ -449,4 +474,5 @@ Instrucciones clínicas (OBLIGATORIAS):
     return res.status(500).json({ ok: false, error: 'Error interno', friendly });
   }
 }
+// ======================= FIN ORQUESTADOR =======================
 
