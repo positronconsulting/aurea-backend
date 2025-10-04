@@ -1,16 +1,13 @@
-// ✅ Seed de Upstash con toda la BD (codigos + usuarios) desde GAS export
+// pages/api/admin/seed-cache.js — GET export con fallback a POST export
 const ADMIN_KEY = (process.env.AUREA_ADMIN_KEY || '').trim();
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'https://www.positronconsulting.com';
 const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL || '';
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
-
-// Preferencia: si hay GAS_EXPORT_URL la usamos tal cual.
-// Si no, construimos desde GAS_EXEC_BASE_URL + ?action=export&key=...
-const GAS_EXPORT_URL = (process.env.GAS_EXPORT_URL || '').trim();
+const GAS_EXPORT_URL = (process.env.GAS_EXPORT_URL || '').trim(); // puede estar vacío
 const GAS_EXEC_BASE_URL = (process.env.GAS_EXEC_BASE_URL || '').trim();
 
-const TTL_OK_S  = parseInt(process.env.SEED_TTL_OK_SECONDS || '86400', 10); // 24h
-const TTL_NEG_S = parseInt(process.env.SEED_TTL_NEG_SECONDS || '600', 10);  // 10m (por si luego guardas negativos)
+const TTL_OK_S  = parseInt(process.env.SEED_TTL_OK_SECONDS || '86400', 10);
+const TTL_NEG_S = parseInt(process.env.SEED_TTL_NEG_SECONDS || '600', 10);
 
 function cors(res){
   res.setHeader('Access-Control-Allow-Origin', FRONTEND_ORIGIN);
@@ -32,6 +29,25 @@ async function redisSetEx(key, value, ttlSec) {
   if (!r.ok) throw new Error('fallo redis set');
 }
 
+async function fetchDumpViaGET(url) {
+  const r = await fetch(url);
+  const text = await r.text().catch(()=> '');
+  let dump = null; try { dump = JSON.parse(text); } catch {}
+  return { ok: r.ok && !!dump?.ok, dump, raw:text };
+}
+
+async function fetchDumpViaPOST(execBase, adminKey) {
+  if (!execBase) return { ok:false, dump:null, raw:'no exec base' };
+  const r = await fetch(execBase, {
+    method: 'POST',
+    headers: { 'Content-Type':'application/json' },
+    body: JSON.stringify({ action:'export', key: adminKey })
+  });
+  const text = await r.text().catch(()=> '');
+  let dump = null; try { dump = JSON.parse(text); } catch {}
+  return { ok: r.ok && !!dump?.ok, dump, raw:text };
+}
+
 export default async function handler(req, res){
   cors(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -40,18 +56,24 @@ export default async function handler(req, res){
   const key = req.headers['x-admin-key'] || req.query.key || '';
   if (!ADMIN_KEY || key !== ADMIN_KEY) return json(res, 401, { ok:false, motivo:'Unauthorized' });
 
-  let exportUrl = GAS_EXPORT_URL;
-  if (!exportUrl) {
-    if (!GAS_EXEC_BASE_URL) {
-      return json(res, 500, { ok:false, motivo:'GAS_EXPORT_URL o GAS_EXEC_BASE_URL no configurados' });
-    }
-    exportUrl = `${GAS_EXEC_BASE_URL}?action=export&key=${encodeURIComponent(ADMIN_KEY)}`;
+  const exportUrl = GAS_EXPORT_URL || (GAS_EXEC_BASE_URL ? `${GAS_EXEC_BASE_URL}?action=export&key=${encodeURIComponent(ADMIN_KEY)}` : '');
+
+  if (!exportUrl && !GAS_EXEC_BASE_URL) {
+    return json(res, 500, { ok:false, motivo:'Faltan GAS_EXEC_BASE_URL y/o GAS_EXPORT_URL' });
   }
 
-  const dumpRes = await fetch(exportUrl);
-  const dumpText = await dumpRes.text().catch(()=> '');
-  let dump = null; try { dump = JSON.parse(dumpText); } catch {}
-  if (!dumpRes.ok || !dump?.ok) return json(res, 200, { ok:false, motivo:'Dump inválido', error: dumpText?.slice(0,200) });
+  // 1) Intento GET
+  let { ok, dump, raw } = exportUrl ? await fetchDumpViaGET(exportUrl) : { ok:false, dump:null, raw:'sin GAS_EXPORT_URL' };
+
+  // 2) Fallback a POST
+  if (!ok) {
+    const postRes = await fetchDumpViaPOST(GAS_EXEC_BASE_URL, ADMIN_KEY);
+    ok = postRes.ok;
+    dump = postRes.dump;
+    raw = postRes.raw;
+  }
+
+  if (!ok || !dump) return json(res, 200, { ok:false, motivo:'Dump inválido', error: String(raw).slice(0,200) });
 
   const { codigos = [], usuarios = [] } = dump;
   let okL=0, okU=0;
@@ -69,3 +91,4 @@ export default async function handler(req, res){
 
   return json(res, 200, { ok:true, seededLicencias: okL, seededUsuarios: okU, ts: Date.now() });
 }
+
