@@ -1,101 +1,145 @@
-// /api/orquestador.js — orquesta el login con un único endpoint (para Wix)
-// Intenta primero tu wrapper cacheado (verificar-usuario) y si no, cae a GAS.
-// Responde SIEMPRE 200 con estructura estable para Wix.
+// /api/orquestador/index.js  (Next.js API Route / Vercel serverless)
+// Requiere Node 18 en Vercel (fetch global disponible)
+export const config = {
+  runtime: 'nodejs18.x', // asegura serverless, NO Edge
+};
 
-export const config = { runtime: 'edge' };
+// Env vars (ajústalas en Vercel)
+const ALLOWED_ORIGIN = process.env.FRONTEND_ORIGIN || 'https://www.positronconsulting.com';
 
-const ORIGIN = process.env.FRONTEND_ORIGIN || '*';
+// Endpoints internos (cache layer)
+const CACHE_VERIFY_USER_URL =
+  process.env.CACHE_VERIFY_USER_URL ||
+  process.env.AUREA_CACHE_VERIFICAR_USUARIO_URL || // por si ya la tenías así
+  'https://aurea-backend-two.vercel.app/api/cache/verificar-usuario';
 
-// 1) Wrapper cacheado (recomendado): /api/cache/verificar-usuario (Vercel)
-// 2) Fallback directo: GAS_EXEC_BASE_URL (GAS verificarUsuarioYCodigo)
-const VERIFY_USUARIO_URL =
-  process.env.AUREA_GAS_VERIFICAR_USUARIO_URL || // apunta a /api/cache/verificar-usuario
-  process.env.GAS_EXEC_BASE_URL ||                // último recurso: GAS /exec
-  '';
+const CACHE_VERIFY_CODE_URL =
+  process.env.CACHE_VERIFY_CODE_URL ||
+  process.env.AUREA_CACHE_VERIFICAR_CODIGO_URL ||
+  'https://aurea-backend-two.vercel.app/api/cache/verificar-codigo';
 
-function cors(extra = {}) {
-  return {
-    'Access-Control-Allow-Origin': ORIGIN,
-    'Access-Control-Allow-Methods': 'POST, OPTIONS, GET',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Cache-Control': 'public, max-age=0, must-revalidate',
-    ...extra,
-  };
+// ---------- utils ----------
+function setCors(res) {
+  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS, GET');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
 
-function j200(obj, extra) {
-  return new Response(JSON.stringify(obj), { status: 200, headers: cors(extra) });
+function pickHeader(h, name) {
+  try { return h.get(name) || null; } catch { return null; }
 }
 
-async function postJSON(url, data, timeoutMs = 12000) {
+// Ejecuta una función que hace fetch y la aborta a los ms indicados.
+// fn debe ser (signal) => Promise<...>
+function withTimeout(fn, ms, label = 'op') {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data || {}),
-      signal: ctrl.signal,
+  const id = setTimeout(() => ctrl.abort(), ms);
+  return fn(ctrl.signal)
+    .finally(() => clearTimeout(id))
+    .catch((err) => {
+      // Normalizamos el error para diagnóstico
+      throw new Error(`TIMEOUT_${label}:${err?.message || String(err)}`);
     });
-    const txt = await res.text();
-    let json = null;
-    try { json = txt ? JSON.parse(txt) : null; } catch {}
-    return { okHttp: res.ok, json, status: res.status, raw: txt };
-  } finally {
-    clearTimeout(t);
-  }
 }
 
-export default async function handler(req) {
-  if (req.method === 'OPTIONS') return new Response(null, { status: 200, headers: cors() });
+async function postJSON(url, body, signal) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+    signal,
+  });
+  const text = await res.text(); // siempre leemos texto para evitar throws
+  let json = null;
+  try { json = JSON.parse(text); } catch { /* noop */ }
+  return { res, json, text };
+}
 
-  const url = new URL(req.url);
-  const action = (url.searchParams.get('action') || '').toLowerCase();
-  if (action !== 'login') return j200({ ok: false, motivo: 'Acción no soportada' });
+// ---------- handler ----------
+export default async function handler(req, res) {
+  setCors(res);
+  if (req.method === 'OPTIONS') return res.status(200).end();
 
-  let body = {};
-  try { body = await req.json(); } catch {}
-  const email = String(body.email || '').trim().toLowerCase();
-  const codigo = String(body.codigo || '').trim().toUpperCase();
-  if (!email || !email.includes('@') || !codigo) {
-    return j200({ ok: false, acceso: false, motivo: 'Parámetros inválidos' });
+  const action = String(req.query.action || '').toLowerCase();
+
+  // Solo soportamos login en este orquestador
+  if (action !== 'login') {
+    return res.status(200).json({ ok: false, motivo: 'Invalid action' });
   }
-  if (!VERIFY_USUARIO_URL) {
-    return j200({ ok: false, acceso: false, motivo: 'Config inválida (VERIFY_USUARIO_URL vacío)' });
+
+  // Tomamos body de forma segura (Next ya parsea JSON; si no, hacemos fallback)
+  const bodyIn = (req.body && typeof req.body === 'object')
+    ? req.body
+    : (() => {
+        try { return JSON.parse(req.body || '{}'); } catch { return {}; }
+      })();
+
+  const emailRaw  = bodyIn.email ?? bodyIn.correo;
+  const codigoRaw = bodyIn.codigo ?? bodyIn.code;
+
+  const correo = String(emailRaw || '').trim().toLowerCase();
+  const codigo = String(codigoRaw || '').trim().toUpperCase();
+
+  if (!correo || !codigo || !correo.includes('@')) {
+    return res.status(200).json({ ok: false, acceso: false, motivo: 'Parámetros inválidos' });
   }
 
-  // 1 intento + 1 reintento corto si hay timeout/error
-  let resp = null;
-  try {
-    resp = await postJSON(VERIFY_USUARIO_URL, { correo: email, codigo }, 12000);
-    if (!resp.okHttp || !resp.json) throw new Error('bad first attempt');
-  } catch {
+  // Tiempo de espera suficiente para permitir fallback a GAS (~10–18s)
+  const TIMEOUT_MS = 25000;
+  const payload = { correo, codigo };
+
+  // Pequeño helper para consultar el verificador y propagar headers útiles
+  const callVerifyUsuario = async (signal) => {
+    const t0 = Date.now();
+    const { res: r2, json } = await postJSON(CACHE_VERIFY_USER_URL, payload, signal);
+
+    // Propaga headers de diagnóstico si existen
+    const diag = {
+      'Aurea-Cache': pickHeader(r2.headers, 'Aurea-Cache'),
+      'Aurea-Diag': pickHeader(r2.headers, 'Aurea-Diag'),
+      'Aurea-Elapsedms': pickHeader(r2.headers, 'Aurea-Elapsedms'),
+    };
+    for (const [k, v] of Object.entries(diag)) {
+      if (v) res.setHeader(k, v);
+    }
+    res.setHeader('Aurea-Proxy-Elapsedms', String(Date.now() - t0));
+
+    return json;
+  };
+
+  // Reintento suave: hasta 2 intentos
+  let lastErr = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      resp = await postJSON(VERIFY_USUARIO_URL, { correo: email, codigo }, 12000);
-    } catch {
-      return j200({ ok: false, acceso: false, motivo: 'Timeout verificar usuario' });
+      const json = await withTimeout(
+        (signal) => callVerifyUsuario(signal),
+        TIMEOUT_MS,
+        `verificar-usuario#${attempt}`
+      );
+
+      if (!json || typeof json.ok !== 'boolean') {
+        throw new Error(`Respuesta inválida de cache/verificar-usuario (attempt ${attempt})`);
+      }
+
+      // Si el verificador dice que no hay acceso, devolvemos tal cual (Wix ya muestra mensajes)
+      if (!json.ok || !json.acceso) {
+        return res.status(200).json(json);
+      }
+
+      // ✅ Éxito total
+      return res.status(200).json(json);
+    } catch (err) {
+      lastErr = err;
+      // Backoff leve antes del reintento
+      if (attempt === 1) await new Promise((r) => setTimeout(r, 300));
     }
   }
 
-  const data = resp.json;
-  if (!data || data.ok !== true) {
-    return j200({ ok: false, acceso: false, motivo: (data && data.motivo) || 'Fallo verificación de usuario' });
-  }
-
-  if (data.acceso !== true) {
-    return j200({
-      ok: false, acceso: false, motivo: data.motivo || 'Acceso denegado',
-      institucion: data.institucion || '',
-      tipoInstitucion: (data.tipoInstitucion || '').toLowerCase(),
-      correoSOS: data.correoSOS || '',
-    });
-  }
-
-  return j200({
-    ok: true, acceso: true,
-    usuario: data.usuario || {},
-    institucion: data.institucion || '',
-    tipoInstitucion: (data.tipoInstitucion || '').toLowerCase(),
-    correoSOS: data.correoSOS || '',
+  // Si llegamos aquí, fue timeout u otro fallo interno
+  return res.status(200).json({
+    ok: false,
+    acceso: false,
+    motivo: 'Timeout verificar usuario',
+    error: String(lastErr || 'UNKNOWN'),
   });
 }
