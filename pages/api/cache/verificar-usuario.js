@@ -1,34 +1,27 @@
 // ✅ pages/api/cache/verificar-usuario.js
-// Proxy robusto hacia GAS (sin bucles), con caché Upstash opcional (60s), CORS y GET "pong".
-// Respuesta normalizada: { ok, acceso, yaRegistrado, usuario, institucion, tipoInstitucion, correoSOS }
+// Proxy robusto hacia GAS (/exec), con caché Upstash 60s, CORS y GET ping.
 
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'https://www.positronconsulting.com';
 
-// 🔒 Siempre directo al GAS (sin loop)
-const GAS_URL = 'https://script.google.com/macros/s/AKfycbwDMJb1IJ5H-rFOqg2F- PMQKtUclaD5Z7pFPAraeHpE9VB8srzuAtV4ui9Gb9SnlzDgmA/exec';
+// ⚠️ TU GAS WEB APP (exec) — el que nos diste:
+const GAS_URL = 'https://script.google.com/macros/s/AKfycbwDMJb1IJ5H-rFOqg2F-PMQKtUclaD5Z7pFPAraeHpE9VB8srzuAtV4ui9Gb9SnlzDgmA/exec';
 
-
-// Upstash Redis REST (opcional: si no está configurado, seguimos sin caché)
+// Upstash Redis REST (opcional pero recomendado)
 const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL || '';
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
-const CACHE_TTL_S = parseInt(process.env.CACHE_TTL_SECONDS || '60', 10); // 60s por default
+const CACHE_TTL_S = parseInt(process.env.CACHE_TTL_SECONDS || '60', 10);
 
 function setCORS(res) {
   res.setHeader('Access-Control-Allow-Origin', FRONTEND_ORIGIN);
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS, GET');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
-
-function json(res, status, obj) {
-  res.status(status).json(obj);
-}
-
+function json(res, status, obj) { res.status(status).json(obj); }
 function withTimeout(promise, ms) {
   return new Promise((resolve, reject) => {
     const id = setTimeout(() => reject(new Error('TIMEOUT')), ms);
-    promise
-      .then(v => { clearTimeout(id); resolve(v); })
-      .catch(e => { clearTimeout(id); reject(e); });
+    promise.then(v => { clearTimeout(id); resolve(v); })
+           .catch(e => { clearTimeout(id); reject(e); });
   });
 }
 
@@ -44,7 +37,6 @@ async function redisGet(key) {
     try { return JSON.parse(j.result); } catch { return null; }
   } catch { return null; }
 }
-
 async function redisSetEx(key, value, ttlSec) {
   if (!REDIS_URL || !REDIS_TOKEN) return;
   try {
@@ -59,38 +51,25 @@ async function redisSetEx(key, value, ttlSec) {
       },
       body
     });
-  } catch { /* best effort */ }
+  } catch {}
 }
 
 export default async function handler(req, res) {
   setCORS(res);
-
   if (req.method === 'OPTIONS') return res.status(200).end();
-
-  // Para pruebas/curiosidad sin ensuciar logs
-  if (req.method === 'GET') {
-    return json(res, 200, { ok: true, ping: 'verificar-usuario', method: 'GET' });
-  }
-
-  if (req.method !== 'POST') {
-    return json(res, 405, { ok: false, motivo: 'Método no permitido' });
-  }
+  if (req.method === 'GET') return json(res, 200, { ok: true, ping: 'verificar-usuario', method: 'GET' });
+  if (req.method !== 'POST') return json(res, 405, { ok: false, motivo: 'Método no permitido' });
 
   const correo = String(req.body?.correo || '').trim().toLowerCase();
   const codigo = String(req.body?.codigo || '').trim().toUpperCase();
-
   if (!correo || !codigo || !correo.includes('@')) {
     return json(res, 200, { ok: false, acceso: false, motivo: 'Parámetros inválidos' });
   }
 
   const cacheKey = `verifUsuario:${correo}:${codigo}`;
-  // 1) Cache (si hay Upstash)
   const cached = await redisGet(cacheKey);
-  if (cached && typeof cached === 'object') {
-    return json(res, 200, cached);
-  }
+  if (cached && typeof cached === 'object') return json(res, 200, cached);
 
-  // 2) Llamar a GAS directo (sin riesgo de loop)
   try {
     const r = await withTimeout(
       fetch(GAS_URL, {
@@ -123,9 +102,7 @@ export default async function handler(req, res) {
       correoSOS: data.correoSOS || null
     };
 
-    // 3) Guardar en caché 60s (si hay Upstash)
     await redisSetEx(cacheKey, out, CACHE_TTL_S);
-
     return json(res, 200, out);
   } catch (err) {
     const msg = String(err?.message || err);

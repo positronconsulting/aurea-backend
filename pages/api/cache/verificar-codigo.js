@@ -1,117 +1,81 @@
-// pages/api/cache/verificar-codigo.js
-// Edge + logs detallados
-export const config = { runtime: 'edge' };
+// ✅ pages/api/cache/verificar-codigo.js
+// Proxy con caché 60s al endpoint de verificación de CÓDIGO que ya tengas.
+// Usa env GAS_VERIFY_URL (o GAS_LICENCIAS como fallback). GET responde ping.
 
-const GAS_LICENCIAS = process.env.GAS_LICENCIAS;
-const UPSTASH_URL   = process.env.UPSTASH_REDIS_REST_URL;
-const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'https://www.positronconsulting.com';
+const UPSTREAM_URL = process.env.GAS_VERIFY_URL || process.env.GAS_LICENCIAS || ''; // ← define una de estas en Vercel
 
-function log(step, payload) {
-  try { console.log(`[verificar-codigo] ${step}`, payload || {}); } catch {}
+const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL || '';
+const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
+const CACHE_TTL_S = parseInt(process.env.CACHE_TTL_SECONDS || '60', 10);
+
+function setCORS(res) {
+  res.setHeader('Access-Control-Allow-Origin', FRONTEND_ORIGIN);
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS, GET');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 }
+function json(res, status, obj) { res.status(status).json(obj); }
+function withTimeout(p, ms){ return new Promise((resolve, reject)=>{ const id=setTimeout(()=>reject(new Error('TIMEOUT')), ms); p.then(v=>{clearTimeout(id);resolve(v);}).catch(e=>{clearTimeout(id);reject(e);}); }); }
 
-function json(resBody, status = 200) {
-  log('RESPUESTA', { status, resBody });
-  return new Response(JSON.stringify(resBody), {
-    status,
-    headers: { 'content-type': 'application/json; charset=utf-8' }
-  });
-}
-
-async function upstashGet(key) {
-  if (!UPSTASH_URL || !UPSTASH_TOKEN) { log('KV_DISABLED'); return null; }
-  const url = `${UPSTASH_URL}/get/${encodeURIComponent(key)}`;
-  log('KV_GET', { url, key });
-  const r = await fetch(url, { headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` } });
-  const t = await r.text().catch(() => '');
-  log('KV_GET_RES', { status: r.status, text: t?.slice(0, 300) });
-  if (!r.ok) return null;
-  let j = null; try { j = JSON.parse(t); } catch {}
-  let val = null; try { val = j?.result ? JSON.parse(j.result) : null; } catch {}
-  log('KV_GET_PARSED', { hit: !!val });
-  return val;
-}
-
-async function upstashSetEx(key, value, ttlSec = 300) {
-  if (!UPSTASH_URL || !UPSTASH_TOKEN) { log('KV_DISABLED_SET'); return; }
-  const url = `${UPSTASH_URL}/set/${encodeURIComponent(key)}/${encodeURIComponent(JSON.stringify(value))}?EX=${ttlSec}`;
-  log('KV_SET', { url, key, ttlSec });
-  const r = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` } }).catch(e => ({ ok:false, status:0, error:String(e) }));
-  log('KV_SET_RES', { ok: r?.ok, status: r?.status });
-}
-
-export default async function handler(req) {
-  log('ENTRY', { method: req.method, GAS_LICENCIAS: !!GAS_LICENCIAS, hasKV: !!UPSTASH_URL && !!UPSTASH_TOKEN });
+async function redisGet(key) {
+  if (!REDIS_URL || !REDIS_TOKEN) return null;
   try {
-    if (req.method !== 'POST') return json({ ok:false, motivo:'Método no permitido' }, 405);
-    if (!GAS_LICENCIAS)       return json({ ok:false, motivo:'Falta GAS_LICENCIAS' }, 500);
-
-    // 1) Body → código
-    let bodyRaw = '';
-    try { bodyRaw = await req.text(); } catch {}
-    log('BODY_RAW', { bodyRaw: bodyRaw?.slice(0, 500) });
-
-    let body = null; try { body = JSON.parse(bodyRaw || '{}'); } catch {}
-    log('BODY_JSON', { body });
-
-    const codigo = String(body?.codigo || '').trim().toUpperCase();
-    log('CODIGO_NORMALIZADO', { codigo });
-    if (!codigo) return json({ ok:false, motivo:'Código vacío o inválido' }, 400);
-
-    // 2) Cache
-    const cacheKey = `lic:${codigo}`;
-    const cached = await upstashGet(cacheKey);
-    if (cached) {
-      log('CACHE_HIT', { cacheKey, cached });
-      return json(cached, 200);
-    }
-    log('CACHE_MISS', { cacheKey });
-
-    // 3) Llamada a GAS
-    log('GAS_POST', { url: GAS_LICENCIAS, codigo });
-    const gasRes = await fetch(GAS_LICENCIAS, {
+    const r = await fetch(`${REDIS_URL}/get/${encodeURIComponent(key)}`, { headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
+    if (!r.ok) return null;
+    const j = await r.json().catch(()=>null);
+    if (!j || typeof j.result !== 'string' || j.result === 'null') return null;
+    try { return JSON.parse(j.result); } catch { return null; }
+  } catch { return null; }
+}
+async function redisSetEx(key, value, ttlSec) {
+  if (!REDIS_URL || !REDIS_TOKEN) return;
+  try {
+    const body = new URLSearchParams();
+    body.set('value', JSON.stringify(value));
+    body.set('ex', String(ttlSec));
+    await fetch(`${REDIS_URL}/set/${encodeURIComponent(key)}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ codigo })
+      headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body
     });
+  } catch {}
+}
 
-    const gasStatus = gasRes.status;
-    const gasText = await gasRes.text().catch(() => '');
-    log('GAS_RES', { status: gasStatus, text: gasText?.slice(0, 1000) });
+export default async function handler(req, res) {
+  setCORS(res);
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method === 'GET') return json(res, 200, { ok: true, ping: 'verificar-codigo', method: 'GET' });
+  if (req.method !== 'POST') return json(res, 405, { ok: false, motivo: 'Método no permitido' });
 
-    let gasJson = null; try { gasJson = JSON.parse(gasText); } catch {}
-    log('GAS_JSON', { parsed: !!gasJson, gasJson });
+  if (!UPSTREAM_URL) return json(res, 200, { ok:false, motivo:'Falta configurar GAS_VERIFY_URL (o GAS_LICENCIAS)' });
 
-    if (!gasRes.ok || !gasJson) {
-      const r = { ok:false, motivo:`Fallo GAS (${gasStatus})`, error: gasText?.slice(0, 500) || '' };
-      log('GAS_FAIL', r);
-      return json(r, 502);
+  const codigo = String(req.body?.codigo || '').trim().toUpperCase();
+  if (!codigo) return json(res, 200, { ok:false, motivo:'Parámetros inválidos' });
+
+  const cacheKey = `verifCodigo:${codigo}`;
+  const cached = await redisGet(cacheKey);
+  if (cached && typeof cached === 'object') return json(res, 200, cached);
+
+  try {
+    const r = await withTimeout(fetch(UPSTREAM_URL, {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ codigo })
+    }), 8000);
+
+    const text = await r.text().catch(()=> '');
+    let data = null; try { data = text ? JSON.parse(text) : null; } catch {}
+
+    if (!r.ok || !data) {
+      const out = { ok:false, motivo: `Fallo verificación de código (${r.status||0})` };
+      return json(res, 200, out);
     }
 
-    // 4) Validación final y armado de respuesta
-    if (gasJson.acceso !== true) {
-      const r = { ok:false, motivo: gasJson.motivo || 'Código no válido' };
-      log('NEGATIVE_VALIDATION', r);
-      await upstashSetEx(cacheKey, r, 30); // cache corto de negativos
-      return json(r, 200);
-    }
-
-    const tipo = String(gasJson.tipoInstitucion || '').toLowerCase();
-    const respOk = {
-      ok: true,
-      tipoInstitucion: tipo,                   // 'social' | 'empresa' | 'educacion'
-      institucion: gasJson.institucion || '',
-      correoSOS: gasJson.correoSOS || '',
-      codigo
-    };
-    log('OK_RESPONSE', respOk);
-
-    await upstashSetEx(cacheKey, respOk, 300); // 5 min
-    return json(respOk, 200);
-
+    // Passthrough/normalizado: asumimos que upstream devuelve { ok, institucion, tipoInstitucion, correoSOS, ... }
+    await redisSetEx(cacheKey, data, CACHE_TTL_S);
+    return json(res, 200, data);
   } catch (err) {
-    const r = { ok:false, motivo:'Error servidor', error: String(err?.message || err).slice(0, 500) };
-    log('FATAL', r);
-    return json(r, 500);
+    const msg = String(err?.message || err);
+    return json(res, 200, { ok:false, motivo: (msg==='TIMEOUT'?'Timeout verificar-codigo (8s)':'Error verificar-codigo'), error: msg });
   }
 }
