@@ -1,15 +1,16 @@
-// /api/orquestador.js — versión simple: SOLO valida usuario+codigo con un endpoint
-// No toca /api/cache/verificar-codigo, así evitamos neg-cache y 404’s.
+// /api/orquestador.js — orquesta el login con un único endpoint (para Wix)
+// Intenta primero tu wrapper cacheado (verificar-usuario) y si no, cae a GAS.
 // Responde SIEMPRE 200 con estructura estable para Wix.
 
 export const config = { runtime: 'edge' };
 
 const ORIGIN = process.env.FRONTEND_ORIGIN || '*';
 
-// Usa tu wrapper cacheado primero; si no está, cae al GAS directo
+// 1) Wrapper cacheado (recomendado): /api/cache/verificar-usuario (Vercel)
+// 2) Fallback directo: GAS_EXEC_BASE_URL (GAS verificarUsuarioYCodigo)
 const VERIFY_USUARIO_URL =
-  process.env.AUREA_GAS_VERIFICAR_USUARIO_URL ||
-  process.env.GAS_EXEC_BASE_URL ||
+  process.env.AUREA_GAS_VERIFICAR_USUARIO_URL || // apunta a /api/cache/verificar-usuario
+  process.env.GAS_EXEC_BASE_URL ||                // último recurso: GAS /exec
   '';
 
 function cors(extra = {}) {
@@ -50,21 +51,15 @@ export default async function handler(req) {
 
   const url = new URL(req.url);
   const action = (url.searchParams.get('action') || '').toLowerCase();
+  if (action !== 'login') return j200({ ok: false, motivo: 'Acción no soportada' });
 
-  if (action !== 'login') {
-    return j200({ ok: false, motivo: 'Acción no soportada' });
-  }
-
-  // Lee body del login de Wix
   let body = {};
   try { body = await req.json(); } catch {}
   const email = String(body.email || '').trim().toLowerCase();
   const codigo = String(body.codigo || '').trim().toUpperCase();
-
   if (!email || !email.includes('@') || !codigo) {
     return j200({ ok: false, acceso: false, motivo: 'Parámetros inválidos' });
   }
-
   if (!VERIFY_USUARIO_URL) {
     return j200({ ok: false, acceso: false, motivo: 'Config inválida (VERIFY_USUARIO_URL vacío)' });
   }
@@ -77,40 +72,27 @@ export default async function handler(req) {
   } catch {
     try {
       resp = await postJSON(VERIFY_USUARIO_URL, { correo: email, codigo }, 12000);
-    } catch (e2) {
+    } catch {
       return j200({ ok: false, acceso: false, motivo: 'Timeout verificar usuario' });
     }
   }
 
   const data = resp.json;
-
-  // Si el verificador devolvió la forma ya normalizada:
-  // { ok:true/false, acceso:true/false, motivo?, usuario?, institucion?, tipoInstitucion?, correoSOS? }
   if (!data || data.ok !== true) {
-    // Pasamos el motivo si existe, sino uno genérico
-    return j200({
-      ok: false,
-      acceso: false,
-      motivo: (data && data.motivo) || 'Fallo verificación de usuario',
-    });
+    return j200({ ok: false, acceso: false, motivo: (data && data.motivo) || 'Fallo verificación de usuario' });
   }
 
   if (data.acceso !== true) {
-    // Reenvía motivo + metadatos para que Wix muestre mensajes bonitos
     return j200({
-      ok: false,
-      acceso: false,
-      motivo: data.motivo || 'Acceso denegado',
+      ok: false, acceso: false, motivo: data.motivo || 'Acceso denegado',
       institucion: data.institucion || '',
       tipoInstitucion: (data.tipoInstitucion || '').toLowerCase(),
       correoSOS: data.correoSOS || '',
     });
   }
 
-  // Éxito total
   return j200({
-    ok: true,
-    acceso: true,
+    ok: true, acceso: true,
     usuario: data.usuario || {},
     institucion: data.institucion || '',
     tipoInstitucion: (data.tipoInstitucion || '').toLowerCase(),
