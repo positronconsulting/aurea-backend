@@ -1,104 +1,119 @@
-// api/orquestador.js  (simplificado al action=login)
-// Asegúrate de conservar tu resto de acciones si existen.
+// /api/orquestador.js — versión simple: SOLO valida usuario+codigo con un endpoint
+// No toca /api/cache/verificar-codigo, así evitamos neg-cache y 404’s.
+// Responde SIEMPRE 200 con estructura estable para Wix.
 
 export const config = { runtime: 'edge' };
 
 const ORIGIN = process.env.FRONTEND_ORIGIN || '*';
-const VERIFY_CODIGO_URL = process.env.GAS_LICENCIAS || process.env.GAS_VERIFY_URL || ''; // si usas otro nombre, ajústalo
-const CACHE_VERIFICAR_CODIGO = process.env.AUREA_CACHE_VERIFICAR_CODIGO_URL || 'https://aurea-backend-two.vercel.app/api/cache/verificar-codigo';
-const CACHE_VERIFICAR_USUARIO = process.env.AUREA_GAS_VERIFICAR_USUARIO_URL || 'https://aurea-backend-two.vercel.app/api/cache/verificar-usuario';
 
-function corsHeaders(extra = {}) {
+// Usa tu wrapper cacheado primero; si no está, cae al GAS directo
+const VERIFY_USUARIO_URL =
+  process.env.AUREA_GAS_VERIFICAR_USUARIO_URL ||
+  process.env.GAS_EXEC_BASE_URL ||
+  '';
+
+function cors(extra = {}) {
   return {
     'Access-Control-Allow-Origin': ORIGIN,
     'Access-Control-Allow-Methods': 'POST, OPTIONS, GET',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Cache-Control': 'public, max-age=0, must-revalidate',
-    ...extra
+    ...extra,
   };
 }
 
-function json200(obj, extra) {
-  return new Response(JSON.stringify(obj), { status: 200, headers: corsHeaders(extra) });
+function j200(obj, extra) {
+  return new Response(JSON.stringify(obj), { status: 200, headers: cors(extra) });
+}
+
+async function postJSON(url, data, timeoutMs = 12000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data || {}),
+      signal: ctrl.signal,
+    });
+    const txt = await res.text();
+    let json = null;
+    try { json = txt ? JSON.parse(txt) : null; } catch {}
+    return { okHttp: res.ok, json, status: res.status, raw: txt };
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 export default async function handler(req) {
-  if (req.method === 'OPTIONS') return new Response(null, { status: 200, headers: corsHeaders() });
+  if (req.method === 'OPTIONS') return new Response(null, { status: 200, headers: cors() });
 
   const url = new URL(req.url);
   const action = (url.searchParams.get('action') || '').toLowerCase();
 
   if (action !== 'login') {
-    return json200({ ok: false, motivo: 'Acción no soportada' });
+    return j200({ ok: false, motivo: 'Acción no soportada' });
   }
 
-  let payload = {};
-  try { payload = await req.json(); } catch {}
-  const email = String(payload.email || '').toLowerCase().trim();
-  const codigo = String(payload.codigo || '').toUpperCase().trim();
+  // Lee body del login de Wix
+  let body = {};
+  try { body = await req.json(); } catch {}
+  const email = String(body.email || '').trim().toLowerCase();
+  const codigo = String(body.codigo || '').trim().toUpperCase();
 
-  if (!email || !codigo || !email.includes('@')) {
-    return json200({ ok:false, acceso:false, motivo:'Parámetros inválidos' });
+  if (!email || !email.includes('@') || !codigo) {
+    return j200({ ok: false, acceso: false, motivo: 'Parámetros inválidos' });
   }
 
+  if (!VERIFY_USUARIO_URL) {
+    return j200({ ok: false, acceso: false, motivo: 'Config inválida (VERIFY_USUARIO_URL vacío)' });
+  }
+
+  // 1 intento + 1 reintento corto si hay timeout/error
+  let resp = null;
   try {
-    // ===== 1) Verificar CÓDIGO vía cache (nunca 404) =====
-    let lic = null;
+    resp = await postJSON(VERIFY_USUARIO_URL, { correo: email, codigo }, 12000);
+    if (!resp.okHttp || !resp.json) throw new Error('bad first attempt');
+  } catch {
     try {
-      const r = await fetch(CACHE_VERIFICAR_CODIGO, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ codigo })
-      });
-      const t = await r.text();
-      try { lic = t ? JSON.parse(t) : null; } catch { lic = null; }
-    } catch { lic = null; }
-
-    // Normaliza respuesta de código
-    const isCodigoValido = !!(lic && lic.ok === true && lic.activo === true);
-    if (!isCodigoValido) {
-      return json200({ ok: false, acceso: false, motivo: 'Código no válido' });
+      resp = await postJSON(VERIFY_USUARIO_URL, { correo: email, codigo }, 12000);
+    } catch (e2) {
+      return j200({ ok: false, acceso: false, motivo: 'Timeout verificar usuario' });
     }
-
-    // ===== 2) Verificar USUARIO (tu endpoint cacheado) =====
-    let ver = null;
-    try {
-      const r2 = await fetch(CACHE_VERIFICAR_USUARIO, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ correo: email, codigo })
-      });
-      const t2 = await r2.text();
-      try { ver = t2 ? JSON.parse(t2) : null; } catch { ver = null; }
-    } catch { ver = null; }
-
-    if (!ver || ver.ok !== true) {
-      return json200({ ok:false, acceso:false, motivo:'Fallo verificación de usuario' });
-    }
-    if (ver.acceso !== true) {
-      // Passthrough de motivos más comunes para el frontend
-      return json200({
-        ok:false, acceso:false,
-        motivo: ver.motivo || 'Acceso denegado',
-        institucion: ver.institucion || (lic && lic.institucion) || '',
-        tipoInstitucion: ver.tipoInstitucion || (lic && lic.tipoInstitucion) || '',
-        correoSOS: ver.correoSOS || (lic && lic.correoSOS) || ''
-      });
-    }
-
-    // ===== 3) Éxito =====
-    // Normaliza y arma respuesta final
-    const usuario = ver.usuario || {};
-    return json200({
-      ok: true,
-      acceso: true,
-      usuario,
-      institucion: ver.institucion || (lic && lic.institucion) || '',
-      tipoInstitucion: (ver.tipoInstitucion || (lic && lic.tipoInstitucion) || '').toLowerCase(),
-      correoSOS: ver.correoSOS || (lic && lic.correoSOS) || ''
-    });
-
-  } catch (err) {
-    return json200({ ok:false, acceso:false, motivo:'Error interno', error:String(err) });
   }
+
+  const data = resp.json;
+
+  // Si el verificador devolvió la forma ya normalizada:
+  // { ok:true/false, acceso:true/false, motivo?, usuario?, institucion?, tipoInstitucion?, correoSOS? }
+  if (!data || data.ok !== true) {
+    // Pasamos el motivo si existe, sino uno genérico
+    return j200({
+      ok: false,
+      acceso: false,
+      motivo: (data && data.motivo) || 'Fallo verificación de usuario',
+    });
+  }
+
+  if (data.acceso !== true) {
+    // Reenvía motivo + metadatos para que Wix muestre mensajes bonitos
+    return j200({
+      ok: false,
+      acceso: false,
+      motivo: data.motivo || 'Acceso denegado',
+      institucion: data.institucion || '',
+      tipoInstitucion: (data.tipoInstitucion || '').toLowerCase(),
+      correoSOS: data.correoSOS || '',
+    });
+  }
+
+  // Éxito total
+  return j200({
+    ok: true,
+    acceso: true,
+    usuario: data.usuario || {},
+    institucion: data.institucion || '',
+    tipoInstitucion: (data.tipoInstitucion || '').toLowerCase(),
+    correoSOS: data.correoSOS || '',
+  });
 }
