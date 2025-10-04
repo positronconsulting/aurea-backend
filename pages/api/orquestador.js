@@ -1,133 +1,185 @@
-// /pages/api/orquestador.js  (Next.js Pages Router - Vercel Serverless)
-// Si quisieras fijar runtime (opcional): export const config = { runtime: 'nodejs' };
+// /pages/api/orquestador.js  — Flujo login “rápido + invisible”
+//
+// 1) Valida código+usuario en GAS (y relación email↔código).
+// 2) Adjunta perfil emocional desde /api/cache/perfil-usuario (si está en cache).
+// 3) Responde de inmediato a Wix (para /sistemaaurea).
+// 4) Si el test NO ha sido enviado (AW vacío) => dispara POST a /api/analizar-test (fire-and-forget).
 
-const ALLOWED_ORIGIN =
-  process.env.FRONTEND_ORIGIN || 'https://www.positronconsulting.com';
+// ── C O N F I G ────────────────────────────────────────────────────────────────
+const ORIGIN = process.env.FRONTEND_ORIGIN || 'https://www.positronconsulting.com';
 
-// Endpoints internos (capa de caché que ya tienes en Vercel)
-const CACHE_VERIFY_USER_URL =
-  process.env.CACHE_VERIFY_USER_URL ||
-  process.env.AUREA_CACHE_VERIFICAR_USUARIO_URL ||
-  'https://aurea-backend-two.vercel.app/api/cache/verificar-usuario';
+// GAS (verificación unificada de código/usuario + banderas AW)
+const GAS_VERIFICAR_URL = process.env.AUREA_GAS_VERIFICAR_USUARIO_URL; // <== requerido
 
-const CACHE_VERIFY_CODE_URL =
-  process.env.CACHE_VERIFY_CODE_URL ||
-  process.env.AUREA_CACHE_VERIFICAR_CODIGO_URL ||
-  'https://aurea-backend-two.vercel.app/api/cache/verificar-codigo';
+// Cache de perfil emocional (rápido; consulta Redis y sólo si falta llama a GAS)
+const PERFIL_CACHE_URL =
+  process.env.PERFIL_CACHE_URL || 'https://aurea-backend-two.vercel.app/api/cache/perfil-usuario';
 
-// ---------- utils ----------
-function setCors(res) {
-  res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS, GET');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+// Análisis y envío por correo (se lanza en segundo plano)
+const ANALIZAR_TEST_URL =
+  process.env.ANALIZAR_TEST_URL || 'https://aurea-backend-two.vercel.app/api/analizar-test';
+const AUREA_INTERNAL_TOKEN = process.env.AUREA_INTERNAL_TOKEN || '';
+
+// Timeouts “amables”
+const T_VERIFY_MS = 20000;   // GAS verificar
+const T_PERFIL_MS = 2500;    // perfil cache (no bloquear)
+const T_FIRE_MS   = 4000;    // disparo analizar-test
+
+// ── U T I L S ─────────────────────────────────────────────────────────────────
+function setCORS(res) {
+  res.setHeader('Access-Control-Allow-Origin', ORIGIN);
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Internal-Token');
 }
 
-function pickHeader(h, name) {
-  try { return h.get(name) || null; } catch { return null; }
+function parseBody(req) {
+  if (req.body && typeof req.body === 'object') return req.body;
+  try { return JSON.parse(req.body || '{}'); } catch { return {}; }
 }
 
-// Ejecuta una función que usa fetch y la aborta a los ms indicados.
-// fn debe ser (signal) => Promise<...>
-function withTimeout(fn, ms, label = 'op') {
+async function postJSON(url, data, timeoutMs = 12000, extraHeaders = {}) {
   const ctrl = new AbortController();
-  const id = setTimeout(() => ctrl.abort(), ms);
-  return fn(ctrl.signal)
-    .finally(() => clearTimeout(id))
-    .catch((err) => {
-      throw new Error(`TIMEOUT_${label}:${err?.message || String(err)}`);
+  const id = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...extraHeaders },
+      body: JSON.stringify(data || {}),
+      signal: ctrl.signal,
     });
+    const text = await r.text();
+    let j = null; try { j = JSON.parse(text); } catch {}
+    return { okHTTP: r.ok, status: r.status, headers: r.headers, j, text };
+  } finally { clearTimeout(id); }
 }
 
-async function postJSON(url, body, signal) {
-  const res = await fetch(url, {
+// Lanza una petición “fire-and-forget” (no espera el resultado, no bloquea la respuesta)
+function fireAndForget(url, data, extraHeaders = {}) {
+  // Intenta pero no await; errores se silencian.
+  fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type':'application/json' },
-    body: JSON.stringify(body || {}),
-    signal,
-  });
-  const text = await res.text();
-  let json = null;
-  try { json = JSON.parse(text); } catch { /* noop */ }
-  return { res, json, text };
+    headers: { 'Content-Type': 'application/json', ...extraHeaders },
+    body: JSON.stringify(data || {}),
+  }).catch(() => {});
 }
 
-// ---------- handler ----------
+// ── H A N D L E R ─────────────────────────────────────────────────────────────
 export default async function handler(req, res) {
-  setCors(res);
+  setCORS(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
 
+  // action=login (desde Wix)
   const action = String(req.query.action || '').toLowerCase();
-  if (action !== 'login') {
-    return res.status(200).json({ ok:false, motivo:'Invalid action' });
+  if (req.method !== 'POST' || action !== 'login') {
+    return res.status(200).json({ ok: false, motivo: 'Invalid action' });
   }
 
-  // Body seguro (Next ya parsea JSON; fallback si viniera como string)
-  const bodyIn = (req.body && typeof req.body === 'object')
-    ? req.body
-    : (() => { try { return JSON.parse(req.body || '{}'); } catch { return {}; } })();
-
-  const emailRaw  = bodyIn.email ?? bodyIn.correo;
-  const codigoRaw = bodyIn.codigo ?? bodyIn.code;
-
-  const correo = String(emailRaw || '').trim().toLowerCase();
-  const codigo = String(codigoRaw || '').trim().toUpperCase();
+  // Body de Wix: { email, codigo }
+  const body = parseBody(req);
+  const correo = String((body.email ?? body.correo) || '').trim().toLowerCase();
+  const codigo = String((body.codigo ?? body.code) || '').trim().toUpperCase();
 
   if (!correo || !codigo || !correo.includes('@')) {
-    return res.status(200).json({ ok:false, acceso:false, motivo:'Parámetros inválidos' });
-    // 👆 Esto evita el "Parámetros inválidos" que viste cuando el body estaba vacío/mal formado
+    return res.status(200).json({ ok: false, acceso: false, motivo: 'Parámetros inválidos' });
+  }
+  if (!GAS_VERIFICAR_URL) {
+    return res.status(200).json({ ok: false, acceso: false, motivo: 'AUREA_GAS_VERIFICAR_USUARIO_URL no configurado' });
   }
 
-  const TIMEOUT_MS = 25000; // deja respirar a la capa de caché y su fallback a GAS
-  const payload = { correo, codigo };
+  const t0 = Date.now();
 
-  const callVerifyUsuario = async (signal) => {
-    const t0 = Date.now();
-    const { res: r2, json } = await postJSON(CACHE_VERIFY_USER_URL, payload, signal);
+  // 1) VERIFICAR CÓDIGO + USUARIO (y relación) en GAS
+  let gas;
+  try {
+    gas = await postJSON(
+      GAS_VERIFICAR_URL,
+      { correo, codigo },
+      T_VERIFY_MS
+    );
+  } catch (e) {
+    return res.status(200).json({
+      ok: false, acceso: false, motivo: 'Timeout verificar usuario', error: String(e || 'TIMEOUT')
+    });
+  }
 
-    // Propaga headers de diagnóstico si existen (útiles en Wix logs)
-    const diag = {
-      'Aurea-Cache':     pickHeader(r2.headers, 'Aurea-Cache'),
-      'Aurea-Diag':      pickHeader(r2.headers, 'Aurea-Diag'),
-      'Aurea-Elapsedms': pickHeader(r2.headers, 'Aurea-Elapsedms'),
-    };
-    for (const [k,v] of Object.entries(diag)) { if (v) res.setHeader(k, v); }
-    res.setHeader('Aurea-Proxy-Elapsedms', String(Date.now() - t0));
+  // Si GAS devuelve error/denegado, propagamos tal cual (Wix ya sabe mostrar el motivo)
+  if (!gas?.j || typeof gas.j.ok !== 'boolean') {
+    return res.status(200).json({ ok: false, acceso: false, motivo: 'Respuesta inválida de GAS' });
+  }
+  if (!gas.j.ok || !gas.j.acceso) {
+    return res.status(200).json(gas.j);
+  }
 
-    return json;
+  // gas.j trae: institucion, tipoInstitucion, correoSOS, tienePendiente, usuario{..., testYaEnviado}
+  const baseOut = {
+    ok: true,
+    acceso: true,
+    institucion: gas.j.institucion || '',
+    tipoInstitucion: String(gas.j.tipoInstitucion || '').toLowerCase(),
+    correoSOS: gas.j.correoSOS || '',
+    tienePendiente: !!gas.j.tienePendiente,
+    usuario: {
+      nombre: gas.j.usuario?.nombre || '',
+      apellido: gas.j.usuario?.apellido || '',
+      sexo: gas.j.usuario?.sexo || '',
+      fechaNacimiento: gas.j.usuario?.fechaNacimiento || '',
+      email: gas.j.usuario?.email || correo,
+      telefono: gas.j.usuario?.telefono || '',
+      correoEmergencia: gas.j.usuario?.correoEmergencia || '',
+      codigo: gas.j.usuario?.codigo || codigo,
+      testYaEnviado: !!gas.j.usuario?.testYaEnviado,
+      // perfilEmocional: (lo adjuntamos abajo si lo conseguimos rápido)
+    }
   };
 
-  // Reintento suave: 2 intentos máx.
-  let lastErr = null;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const json = await withTimeout(
-        (signal) => callVerifyUsuario(signal),
-        TIMEOUT_MS,
-        `verificar-usuario#${attempt}`
-      );
-
-      if (!json || typeof json.ok !== 'boolean') {
-        throw new Error(`Respuesta inválida de cache/verificar-usuario (attempt ${attempt})`);
-      }
-
-      if (!json.ok || !json.acceso) {
-        // Devuelve tal cual para que Wix muestre el motivo correcto
-        return res.status(200).json(json);
-      }
-
-      // ✅ Éxito total
-      return res.status(200).json(json);
-    } catch (err) {
-      lastErr = err;
-      if (attempt === 1) await new Promise(r => setTimeout(r, 300));
+  // 2) PERFIL EMOCIONAL desde cache (rápido, sin bloquear demasiado)
+  try {
+    const nombreCompleto = [baseOut.usuario.nombre || '', baseOut.usuario.apellido || ''].join(' ').trim();
+    const rPerfil = await postJSON(
+      PERFIL_CACHE_URL,
+      {
+        email: baseOut.usuario.email,
+        tipoInstitucion: baseOut.tipoInstitucion,
+        nombre: nombreCompleto,
+        institucion: baseOut.institucion
+      },
+      T_PERFIL_MS
+    );
+    if (rPerfil?.j?.ok && rPerfil.j.perfilEmocional) {
+      baseOut.usuario.perfilEmocional = rPerfil.j.perfilEmocional;
+      // Marca de cache útil en logs de Wix
+      try {
+        const cacheHdr = rPerfil.headers?.get?.('Aurea-Cache');
+        if (cacheHdr) res.setHeader('Aurea-Cache', cacheHdr);
+      } catch (_) {}
     }
+  } catch (_) {
+    // Silencioso: si no está, no bloqueamos el login
   }
 
-  // Fallo definitivo (timeout/abort/etc.)
-  return res.status(200).json({
-    ok: false,
-    acceso: false,
-    motivo: 'Timeout verificar usuario',
-    error: String(lastErr || 'UNKNOWN'),
-  });
+  // Header de diagnóstico de latencia
+  res.setHeader('Aurea-Elapsedms', String(Date.now() - t0));
+
+  // 3) RESPUESTA INMEDIATA a Wix (para que navegue a /sistemaaurea)
+  res.status(200).json(baseOut);
+
+  // 4) DESPUÉS: si NO hay “X” en AW (tienePendiente=true o testYaEnviado=false), dispara analizar-test
+  try {
+    const faltaX = (!!baseOut.tienePendiente) || (!baseOut.usuario.testYaEnviado);
+    if (faltaX && ANALIZAR_TEST_URL && AUREA_INTERNAL_TOKEN) {
+      fireAndForget(
+        ANALIZAR_TEST_URL,
+        {
+          tipoInstitucion: baseOut.tipoInstitucion,
+          email: baseOut.usuario.email,
+          correoSOS: baseOut.correoSOS || '',
+          codigo: baseOut.usuario.codigo
+        },
+        { 'X-Internal-Token': AUREA_INTERNAL_TOKEN }
+      );
+      // No esperamos nada; esto corre “invisible” para el usuario.
+    }
+  } catch (_) {
+    // Ningún error aquí debe afectar al login.
+  }
 }
