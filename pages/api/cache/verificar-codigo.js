@@ -1,110 +1,147 @@
-// ✅ Verificar CÓDIGO: lee Redis "materializado" primero; fallback a upstream; cache 2m negativos/positivos
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || 'https://www.positronconsulting.com';
+// api/cache/verificar-codigo.js
+// Verifica un código con Redis como fuente principal + upstream opcional.
+// Nunca burbujea 404: siempre 200 con motivo normalizado.
+
+export const config = { runtime: 'edge' };
+
+const ORIGIN = process.env.FRONTEND_ORIGIN || '*';
 const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL || '';
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
-const CACHE_TTL_POS_S = parseInt(process.env.CACHE_TTL_POS_CODE_S || '120', 10); // 2m
-const CACHE_TTL_NEG_S = parseInt(process.env.CACHE_TTL_NEG_CODE_S || '120', 10); // 2m
+const GAS_VERIFY_URL = process.env.GAS_VERIFY_URL || ''; // opcional
 
-// Upstream (si quisieras validar contra otro GAS específico de códigos)
-const UPSTREAM_URL = process.env.GAS_VERIFY_URL || process.env.GAS_LICENCIAS || '';
+// TTLs
+const CACHE_TTL_POS_S  = 60 * 60 * 24;      // 24h para positivos
+const CACHE_TTL_NEG_S  = 60 * 10;           // 10m para negativos
 
-function setCORS(res) {
-  res.setHeader('Access-Control-Allow-Origin', FRONTEND_ORIGIN);
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS, GET');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+function corsHeaders(extra = {}) {
+  return {
+    'Access-Control-Allow-Origin': ORIGIN,
+    'Access-Control-Allow-Methods': 'POST, OPTIONS, GET',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Cache-Control': 'public, max-age=0, must-revalidate',
+    ...extra
+  };
 }
-function json(res, status, obj, cacheHeader) {
-  if (cacheHeader) res.setHeader('Aurea-Cache', cacheHeader);
-  res.status(status).json(obj);
+
+function json(res, status, body, extraHeaders) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: corsHeaders(extraHeaders || {})
+  });
 }
-function withTimeout(p, ms){ return new Promise((resolve, reject)=>{ const id=setTimeout(()=>reject(new Error('TIMEOUT')), ms); p.then(v=>{clearTimeout(id);resolve(v);}).catch(e=>{clearTimeout(id);reject(e);}); }); }
+
+function normCodigo(c) {
+  return String(c || '').trim().toUpperCase();
+}
 
 async function redisGet(key) {
   if (!REDIS_URL || !REDIS_TOKEN) return null;
-  try {
-    const r = await fetch(`${REDIS_URL}/get/${encodeURIComponent(key)}`, { headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
-    if (!r.ok) return null;
-    const j = await r.json().catch(()=>null);
-    if (!j || typeof j.result !== 'string' || j.result === 'null') return null;
-    try { return JSON.parse(j.result); } catch { return null; }
-  } catch { return null; }
+  const url = `${REDIS_URL}/get/${encodeURIComponent(key)}`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
+  if (!r.ok) return null;
+  const t = await r.text();
+  if (!t) return null;
+  try { return JSON.parse(t); } catch { return null; }
 }
-async function redisSetEx(key, value, ttlSec) {
-  if (!REDIS_URL || !REDIS_TOKEN) return;
+
+async function redisSetEx(key, val, ttl) {
+  if (!REDIS_URL || !REDIS_TOKEN) return false;
+  const url = `${REDIS_URL}/set/${encodeURIComponent(key)}/${encodeURIComponent(JSON.stringify(val))}?EX=${ttl}`;
+  const r = await fetch(url, { headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
+  return r.ok;
+}
+
+function normalizeUpstream(data = {}) {
+  // Acepta distintas formas y las normaliza
+  const activo = (data.activo === true) || String(data.activo).toLowerCase() === 'true';
+  const institucion = data.institucion || data.org || '';
+  const tipoRaw = data.tipoInstitucion || data.tipo || '';
+  const tipoInstitucion = String(tipoRaw || '').toLowerCase();
+  const correoSOS = data.correoSOS || data.sos || '';
+
+  return {
+    ok: true,
+    activo,
+    institucion,
+    tipoInstitucion, // guardamos en minúsculas
+    correoSOS
+  };
+}
+
+async function callUpstream(codigo, timeoutMs = 8000) {
+  if (!GAS_VERIFY_URL) return { ok: false, status: 0, data: null, raw: null };
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const body = new URLSearchParams();
-    body.set('value', JSON.stringify(value));
-    body.set('ex', String(ttlSec));
-    await fetch(`${REDIS_URL}/set/${encodeURIComponent(key)}`, {
+    const res = await fetch(GAS_VERIFY_URL, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${REDIS_TOKEN}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ codigo }),
+      signal: controller.signal
     });
-  } catch {}
+    const text = await res.text();
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch {}
+    return { ok: res.ok, status: res.status, data, raw: text };
+  } finally {
+    clearTimeout(id);
+  }
 }
 
-export default async function handler(req, res) {
-  setCORS(res);
-  if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method === 'GET') return json(res, 200, { ok: true, ping: 'verificar-codigo', method: 'GET' }, 'PING');
-  if (req.method !== 'POST') return json(res, 405, { ok: false, motivo: 'Método no permitido' });
+export default async function handler(req) {
+  // CORS preflight
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 200, headers: corsHeaders() });
+  }
 
-  const codigo = String(req.body?.codigo || '').trim().toUpperCase();
-  if (!codigo) return json(res, 200, { ok:false, motivo:'Parámetros inválidos' });
+  // Permitimos GET para diagnósticos simples (p.ej. ?codigo=BETA)
+  let body = {};
+  if (req.method === 'GET') {
+    const { searchParams } = new URL(req.url);
+    body.codigo = searchParams.get('codigo') || '';
+  } else if (req.method === 'POST') {
+    body = await req.json().catch(() => ({}));
+  } else {
+    return json(req, 405, { ok: false, motivo: 'Método no permitido' });
+  }
 
-  // 1) Redis materializado
+  const codigo = normCodigo(body.codigo);
+  if (!codigo) {
+    return json(req, 200, { ok: false, motivo: 'Código requerido' });
+  }
+
   const licKey = `lic:code:${codigo}`;
-  const lic = await redisGet(licKey);
-  if (lic) {
-    if (!lic.activo) return json(res, 200, { ok:true, motivo:'Código inválido o inactivo', activo:false }, 'HIT:redis');
-    return json(res, 200, {
-      ok:true, activo:true,
-      institucion: lic.institucion || '',
-      tipoInstitucion: (lic.tipoInstitucion||'').toLowerCase(),
-      correoSOS: lic.correoSOS || '',
-      codigo
-    }, 'HIT:redis');
-  }
-
-  // 2) Fallback a upstream (opcional)
-  if (!UPSTREAM_URL) {
-    // si no hay upstream definido, devolvemos inválido y cacheamos corto
-    const out = { ok:true, motivo:'Código inválido o inactivo', activo:false };
-    await redisSetEx(licKey, { ...out, codigo }, CACHE_TTL_NEG_S);
-    return json(res, 200, out, 'MISS:no-upstream');
-  }
 
   try {
-    const r = await withTimeout(fetch(UPSTREAM_URL, {
-      method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ codigo })
-    }), 8000);
-    const text = await r.text().catch(()=> '');
-    let data = null; try { data = text ? JSON.parse(text) : null; } catch {}
-
-    if (!r.ok || !data) {
-      const out = { ok:false, motivo: `Fallo verificación de código (${r.status||0})` };
-      return json(res, 200, out, 'MISS:upstream-error');
+    // 1) Redis first
+    const cached = await redisGet(licKey);
+    if (cached && cached.ok === true) {
+      // Puede ser activo:true o activo:false (negative cache)
+      return json(req, 200, { ...cached, codigo }, { 'Aurea-Cache': 'HIT:redis' });
     }
 
-    // Normaliza y escribe en redis
-    if (data.activo === false || data.ok === false) {
-      const out = { ok:true, motivo:'Código inválido o inactivo', activo:false };
-      await redisSetEx(licKey, { ...out, codigo }, CACHE_TTL_NEG_S);
-      return json(res, 200, out, 'MISS:upstream-neg');
+    // 2) Upstream (opcional)
+    const up = await callUpstream(codigo);
+
+    if (up.ok && up.data && (up.data.ok === true || typeof up.data.activo !== 'undefined')) {
+      // Normalizamos
+      const norm = normalizeUpstream(up.data);
+      // Guardamos positivo o negativo según "activo"
+      const ttl = norm.activo ? CACHE_TTL_POS_S : CACHE_TTL_NEG_S;
+      const payload = { ...norm, codigo };
+      await redisSetEx(licKey, payload, ttl);
+      return json(req, 200, payload, { 'Aurea-Cache': 'MISS:upstream-ok' });
     }
 
-    const normalized = {
-      ok:true,
-      activo:true,
-      institucion: data.institucion || '',
-      tipoInstitucion: (data.tipoInstitucion || '').toLowerCase(),
-      correoSOS: data.correoSOS || '',
-      codigo
-    };
-    await redisSetEx(licKey, normalized, CACHE_TTL_POS_S);
-    return json(res, 200, normalized, 'MISS:upstream-pos');
+    // 3) Upstream falló (404, timeout, lo que sea) → normalizamos a negativo controlado
+    const neg = { ok: true, activo: false, motivo: 'Código inválido o inactivo', codigo };
+    await redisSetEx(licKey, neg, CACHE_TTL_NEG_S); // negative cache corto
+    return json(req, 200, neg, { 'Aurea-Cache': 'MISS:upstream-error' });
+
   } catch (err) {
-    const msg = String(err?.message || err);
-    return json(res, 200, { ok:false, motivo: (msg==='TIMEOUT'?'Timeout verificar-codigo (8s)':'Error verificar-codigo'), error: msg }, 'MISS:timeout');
+    // Falla inesperada → también normalizamos
+    const neg = { ok: true, activo: false, motivo: 'Código inválido o inactivo', codigo, error: String(err) };
+    await redisSetEx(licKey, neg, CACHE_TTL_NEG_S);
+    return json(req, 200, neg, { 'Aurea-Cache': 'MISS:error' });
   }
 }
