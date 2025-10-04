@@ -1,16 +1,13 @@
-// /api/orquestador/index.js  (Next.js API Route / Vercel serverless)
-// Requiere Node 18 en Vercel (fetch global disponible)
-export const config = {
-  runtime: 'nodejs18.x', // asegura serverless, NO Edge
-};
+// /pages/api/orquestador.js  (Next.js Pages Router - Vercel Serverless)
+// Si quisieras fijar runtime (opcional): export const config = { runtime: 'nodejs' };
 
-// Env vars (ajústalas en Vercel)
-const ALLOWED_ORIGIN = process.env.FRONTEND_ORIGIN || 'https://www.positronconsulting.com';
+const ALLOWED_ORIGIN =
+  process.env.FRONTEND_ORIGIN || 'https://www.positronconsulting.com';
 
-// Endpoints internos (cache layer)
+// Endpoints internos (capa de caché que ya tienes en Vercel)
 const CACHE_VERIFY_USER_URL =
   process.env.CACHE_VERIFY_USER_URL ||
-  process.env.AUREA_CACHE_VERIFICAR_USUARIO_URL || // por si ya la tenías así
+  process.env.AUREA_CACHE_VERIFICAR_USUARIO_URL ||
   'https://aurea-backend-two.vercel.app/api/cache/verificar-usuario';
 
 const CACHE_VERIFY_CODE_URL =
@@ -29,7 +26,7 @@ function pickHeader(h, name) {
   try { return h.get(name) || null; } catch { return null; }
 }
 
-// Ejecuta una función que hace fetch y la aborta a los ms indicados.
+// Ejecuta una función que usa fetch y la aborta a los ms indicados.
 // fn debe ser (signal) => Promise<...>
 function withTimeout(fn, ms, label = 'op') {
   const ctrl = new AbortController();
@@ -37,7 +34,6 @@ function withTimeout(fn, ms, label = 'op') {
   return fn(ctrl.signal)
     .finally(() => clearTimeout(id))
     .catch((err) => {
-      // Normalizamos el error para diagnóstico
       throw new Error(`TIMEOUT_${label}:${err?.message || String(err)}`);
     });
 }
@@ -45,11 +41,11 @@ function withTimeout(fn, ms, label = 'op') {
 async function postJSON(url, body, signal) {
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type':'application/json' },
     body: JSON.stringify(body || {}),
     signal,
   });
-  const text = await res.text(); // siempre leemos texto para evitar throws
+  const text = await res.text();
   let json = null;
   try { json = JSON.parse(text); } catch { /* noop */ }
   return { res, json, text };
@@ -61,18 +57,14 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   const action = String(req.query.action || '').toLowerCase();
-
-  // Solo soportamos login en este orquestador
   if (action !== 'login') {
-    return res.status(200).json({ ok: false, motivo: 'Invalid action' });
+    return res.status(200).json({ ok:false, motivo:'Invalid action' });
   }
 
-  // Tomamos body de forma segura (Next ya parsea JSON; si no, hacemos fallback)
+  // Body seguro (Next ya parsea JSON; fallback si viniera como string)
   const bodyIn = (req.body && typeof req.body === 'object')
     ? req.body
-    : (() => {
-        try { return JSON.parse(req.body || '{}'); } catch { return {}; }
-      })();
+    : (() => { try { return JSON.parse(req.body || '{}'); } catch { return {}; } })();
 
   const emailRaw  = bodyIn.email ?? bodyIn.correo;
   const codigoRaw = bodyIn.codigo ?? bodyIn.code;
@@ -81,33 +73,30 @@ export default async function handler(req, res) {
   const codigo = String(codigoRaw || '').trim().toUpperCase();
 
   if (!correo || !codigo || !correo.includes('@')) {
-    return res.status(200).json({ ok: false, acceso: false, motivo: 'Parámetros inválidos' });
+    return res.status(200).json({ ok:false, acceso:false, motivo:'Parámetros inválidos' });
+    // 👆 Esto evita el "Parámetros inválidos" que viste cuando el body estaba vacío/mal formado
   }
 
-  // Tiempo de espera suficiente para permitir fallback a GAS (~10–18s)
-  const TIMEOUT_MS = 25000;
+  const TIMEOUT_MS = 25000; // deja respirar a la capa de caché y su fallback a GAS
   const payload = { correo, codigo };
 
-  // Pequeño helper para consultar el verificador y propagar headers útiles
   const callVerifyUsuario = async (signal) => {
     const t0 = Date.now();
     const { res: r2, json } = await postJSON(CACHE_VERIFY_USER_URL, payload, signal);
 
-    // Propaga headers de diagnóstico si existen
+    // Propaga headers de diagnóstico si existen (útiles en Wix logs)
     const diag = {
-      'Aurea-Cache': pickHeader(r2.headers, 'Aurea-Cache'),
-      'Aurea-Diag': pickHeader(r2.headers, 'Aurea-Diag'),
+      'Aurea-Cache':     pickHeader(r2.headers, 'Aurea-Cache'),
+      'Aurea-Diag':      pickHeader(r2.headers, 'Aurea-Diag'),
       'Aurea-Elapsedms': pickHeader(r2.headers, 'Aurea-Elapsedms'),
     };
-    for (const [k, v] of Object.entries(diag)) {
-      if (v) res.setHeader(k, v);
-    }
+    for (const [k,v] of Object.entries(diag)) { if (v) res.setHeader(k, v); }
     res.setHeader('Aurea-Proxy-Elapsedms', String(Date.now() - t0));
 
     return json;
   };
 
-  // Reintento suave: hasta 2 intentos
+  // Reintento suave: 2 intentos máx.
   let lastErr = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
@@ -121,8 +110,8 @@ export default async function handler(req, res) {
         throw new Error(`Respuesta inválida de cache/verificar-usuario (attempt ${attempt})`);
       }
 
-      // Si el verificador dice que no hay acceso, devolvemos tal cual (Wix ya muestra mensajes)
       if (!json.ok || !json.acceso) {
+        // Devuelve tal cual para que Wix muestre el motivo correcto
         return res.status(200).json(json);
       }
 
@@ -130,12 +119,11 @@ export default async function handler(req, res) {
       return res.status(200).json(json);
     } catch (err) {
       lastErr = err;
-      // Backoff leve antes del reintento
-      if (attempt === 1) await new Promise((r) => setTimeout(r, 300));
+      if (attempt === 1) await new Promise(r => setTimeout(r, 300));
     }
   }
 
-  // Si llegamos aquí, fue timeout u otro fallo interno
+  // Fallo definitivo (timeout/abort/etc.)
   return res.status(200).json({
     ok: false,
     acceso: false,
