@@ -1,6 +1,7 @@
 // api/cache/verificar-codigo.js
 // Verifica un código con Redis como fuente principal + upstream opcional.
-// Nunca burbujea 404: siempre 200 con motivo normalizado.
+// NUNCA burbujea 404: siempre 200 con motivo normalizado.
+// + Admin refresh para limpiar clave y rehacer fetch del upstream
 
 export const config = { runtime: 'edge' };
 
@@ -8,22 +9,23 @@ const ORIGIN = process.env.FRONTEND_ORIGIN || '*';
 const REDIS_URL   = process.env.UPSTASH_REDIS_REST_URL || '';
 const REDIS_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || '';
 const GAS_VERIFY_URL = process.env.GAS_VERIFY_URL || ''; // opcional
+const ADMIN_KEY = process.env.AUREA_ADMIN_KEY || '';
 
 // TTLs
-const CACHE_TTL_POS_S  = 60 * 60 * 24;      // 24h para positivos
-const CACHE_TTL_NEG_S  = 60 * 10;           // 10m para negativos
+const CACHE_TTL_POS_S  = 60 * 60 * 24; // 24h
+const CACHE_TTL_NEG_S  = 60 * 10;      // 10m
 
 function corsHeaders(extra = {}) {
   return {
     'Access-Control-Allow-Origin': ORIGIN,
     'Access-Control-Allow-Methods': 'POST, OPTIONS, GET',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Admin-Key',
     'Cache-Control': 'public, max-age=0, must-revalidate',
     ...extra
   };
 }
 
-function json(res, status, body, extraHeaders) {
+function json(reqOrRes, status, body, extraHeaders) {
   return new Response(JSON.stringify(body), {
     status,
     headers: corsHeaders(extraHeaders || {})
@@ -51,21 +53,20 @@ async function redisSetEx(key, val, ttl) {
   return r.ok;
 }
 
+async function redisDel(key) {
+  if (!REDIS_URL || !REDIS_TOKEN) return false;
+  const url = `${REDIS_URL}/del/${encodeURIComponent(key)}`;
+  const r = await fetch(url, { method: 'POST', headers: { Authorization: `Bearer ${REDIS_TOKEN}` } });
+  return r.ok;
+}
+
 function normalizeUpstream(data = {}) {
-  // Acepta distintas formas y las normaliza
   const activo = (data.activo === true) || String(data.activo).toLowerCase() === 'true';
   const institucion = data.institucion || data.org || '';
   const tipoRaw = data.tipoInstitucion || data.tipo || '';
   const tipoInstitucion = String(tipoRaw || '').toLowerCase();
   const correoSOS = data.correoSOS || data.sos || '';
-
-  return {
-    ok: true,
-    activo,
-    institucion,
-    tipoInstitucion, // guardamos en minúsculas
-    correoSOS
-  };
+  return { ok: true, activo, institucion, tipoInstitucion, correoSOS };
 }
 
 async function callUpstream(codigo, timeoutMs = 8000) {
@@ -89,16 +90,16 @@ async function callUpstream(codigo, timeoutMs = 8000) {
 }
 
 export default async function handler(req) {
-  // CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 200, headers: corsHeaders() });
   }
 
-  // Permitimos GET para diagnósticos simples (p.ej. ?codigo=BETA)
+  // Parse body/query
   let body = {};
   if (req.method === 'GET') {
     const { searchParams } = new URL(req.url);
     body.codigo = searchParams.get('codigo') || '';
+    body.refresh = searchParams.get('refresh');
   } else if (req.method === 'POST') {
     body = await req.json().catch(() => ({}));
   } else {
@@ -106,40 +107,58 @@ export default async function handler(req) {
   }
 
   const codigo = normCodigo(body.codigo);
-  if (!codigo) {
-    return json(req, 200, { ok: false, motivo: 'Código requerido' });
-  }
+  if (!codigo) return json(req, 200, { ok: false, motivo: 'Código requerido' });
 
   const licKey = `lic:code:${codigo}`;
 
+  // ADMIN REFRESH
+  const refreshQuery = typeof body.refresh === 'string' ? body.refresh : (new URL(req.url)).searchParams.get('refresh');
+  const wantRefresh = (refreshQuery === '1' || refreshQuery === 'true' || body.refresh === true);
+  const adminHeader = req.headers.get('X-Admin-Key') || '';
+
+  if (wantRefresh) {
+    if (!ADMIN_KEY || adminHeader !== ADMIN_KEY) {
+      return json(req, 200, { ok: false, motivo: 'Unauthorized refresh' });
+    }
+    // borra cache y rehace upstream
+    await redisDel(licKey);
+    const up = await callUpstream(codigo);
+    if (up.ok && up.data) {
+      const norm = normalizeUpstream(up.data);
+      const ttl = norm.activo ? CACHE_TTL_POS_S : CACHE_TTL_NEG_S;
+      const payload = { ...norm, codigo };
+      await redisSetEx(licKey, payload, ttl);
+      return json(req, 200, payload, { 'Aurea-Cache': 'REFRESH:upstream' });
+    }
+    const neg = { ok: true, activo: false, motivo: 'Código inválido o inactivo', codigo };
+    await redisSetEx(licKey, neg, CACHE_TTL_NEG_S);
+    return json(req, 200, neg, { 'Aurea-Cache': 'REFRESH:upstream-error' });
+  }
+
+  // Flujo normal
   try {
-    // 1) Redis first
+    // 1) Redis
     const cached = await redisGet(licKey);
     if (cached && cached.ok === true) {
-      // Puede ser activo:true o activo:false (negative cache)
       return json(req, 200, { ...cached, codigo }, { 'Aurea-Cache': 'HIT:redis' });
     }
 
-    // 2) Upstream (opcional)
+    // 2) Upstream
     const up = await callUpstream(codigo);
-
     if (up.ok && up.data && (up.data.ok === true || typeof up.data.activo !== 'undefined')) {
-      // Normalizamos
       const norm = normalizeUpstream(up.data);
-      // Guardamos positivo o negativo según "activo"
       const ttl = norm.activo ? CACHE_TTL_POS_S : CACHE_TTL_NEG_S;
       const payload = { ...norm, codigo };
       await redisSetEx(licKey, payload, ttl);
       return json(req, 200, payload, { 'Aurea-Cache': 'MISS:upstream-ok' });
     }
 
-    // 3) Upstream falló (404, timeout, lo que sea) → normalizamos a negativo controlado
+    // 3) Falla upstream → negativo controlado
     const neg = { ok: true, activo: false, motivo: 'Código inválido o inactivo', codigo };
-    await redisSetEx(licKey, neg, CACHE_TTL_NEG_S); // negative cache corto
+    await redisSetEx(licKey, neg, CACHE_TTL_NEG_S);
     return json(req, 200, neg, { 'Aurea-Cache': 'MISS:upstream-error' });
 
   } catch (err) {
-    // Falla inesperada → también normalizamos
     const neg = { ok: true, activo: false, motivo: 'Código inválido o inactivo', codigo, error: String(err) };
     await redisSetEx(licKey, neg, CACHE_TTL_NEG_S);
     return json(req, 200, neg, { 'Aurea-Cache': 'MISS:error' });
