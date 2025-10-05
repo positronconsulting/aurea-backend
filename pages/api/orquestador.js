@@ -1,42 +1,49 @@
-// /pages/api/orquestador.js — Login “rápido + invisible”
-// Flujo:
-// 1) Verifica en GAS código+usuario (y relación email↔código) → trae institucion/tipo/correoSOS y flags AW.
-// 2) Intenta adjuntar perfil emocional desde /api/cache/perfil-usuario (rápido, sin bloquear).
-// 3) Responde de inmediato al login (Wix) para ir a /sistemaaurea.
-// 4) Si falta “X” en AW (tienePendiente || !testYaEnviado) → dispara POST a /api/analizar-test (fire-and-forget).
+// /pages/api/orquestador.js — login intacto, chat/finalizar/autosave + logs de temas
 
-// ─────────────────────────── CONFIG ───────────────────────────
 const ORIGIN = process.env.FRONTEND_ORIGIN || 'https://www.positronconsulting.com';
 
-// GAS verificarUsuarioYCodigo.gs (Web App URL /exec)
-const GAS_VERIFICAR_URL = process.env.AUREA_GAS_VERIFICAR_USUARIO_URL; // ⬅️ requerido
+// GAS URLs (tuyas)
+const GAS_VERIFICAR_URL = process.env.GAS_VERIFICAR_URL
+  || 'https://script.google.com/macros/s/AKfycbzqGPWKipeeHafOQAOz8_3lL0nyVkJMgbAWAD0nlti4qKQQ4RITQlRPmDCCR84UJ5zr9w/exec';
 
-// Cache de perfil emocional (rápido)
-const PERFIL_CACHE_URL =
-  process.env.PERFIL_CACHE_URL || 'https://aurea-backend-two.vercel.app/api/cache/perfil-usuario';
+const GAS_GET_PERFIL_URL = process.env.GAS_GET_PERFIL_URL
+  || 'https://script.google.com/macros/s/AKfycbwMXA7CRtOKNBNSArNq8xNH2ePchv_ydBBz6PaG4pVmGQDUzSul-WnKHl8x1aZicP_Htw/exec';
 
-// Endpoint que genera y envía el perfil por correo (no bloquea el login)
-const ANALIZAR_TEST_URL =
-  process.env.ANALIZAR_TEST_URL || 'https://aurea-backend-two.vercel.app/api/analizar-test';
+const GAS_UPDATE_PROFILE_URL = process.env.GAS_UPDATE_PROFILE_URL
+  || 'https://script.google.com/macros/s/AKfycbx9aufQ1sH_VUZ3Ihmec1srGaZmOhpF3DBDVyrzg3wOOLUNpp_qLFJ_caUxr5pyzmu_1w/exec';
+
+const GAS_LOG_CALIFICACIONES_URL = process.env.GAS_LOG_CALIFICACIONES_URL
+  || 'https://script.google.com/macros/s/AKfycbyDdo0sgva6To9UaNQdKzhrSzF5967t2eA6YXi4cYJVgqeYRy7RJFHKhvhOE5vkBHkD_w/exec';
+
+const GAS_TEMAS_INSTITUCION_URL = process.env.GAS_TEMAS_INSTITUCION_URL
+  || 'https://script.google.com/macros/s/AKfycbzJ1hbX6tMRA7qmd9JTRqDNQ9m46LBLqadXQu5Z87wfTeYrxhakC4vqoVtD9zHwwVy5bw/exec';
+
+const GAS_CONTAR_TEMA_URL = process.env.GAS_CONTAR_TEMA_URL
+  || 'https://script.google.com/macros/s/AKfycbzAthTwYE4DRbGzEVxmEdd8rbaAl0SOpB9PnaOIRuOPL8DK_I8YTuPnKf6LQq9dSiG0/exec';
+
+// Backend interno
+const AUREA_CHAT_URL = process.env.AUREA_CHAT_URL
+  || 'https://aurea-backend-two.vercel.app/api/aurea';
+
 const AUREA_INTERNAL_TOKEN = process.env.AUREA_INTERNAL_TOKEN || '';
 
-// Timeouts
-const T_VERIFY_MS = 30000; // GAS verificar (30s)
-const T_PERFIL_MS = 2500;  // perfil cache (2.5s)
-const T_FIRE_MS   = 4000;  // fire-and-forget (no se usa await)
+// Config
+const UMBRAL_PORC = 60;
+const T_VERIFY_MS = 30000;
+const T_GETPERFIL_MS = 8000;
+const T_CHAT_MS = 35000;
+const T_LOG_MS = 12000;
+const T_SAVE_MS = 15000;
 
-// ─────────────────────────── UTILS ────────────────────────────
 function setCORS(res) {
   res.setHeader('Access-Control-Allow-Origin', ORIGIN);
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Internal-Token');
 }
-
 function parseBody(req) {
   if (req.body && typeof req.body === 'object') return req.body;
   try { return JSON.parse(req.body || '{}'); } catch { return {}; }
 }
-
 async function postJSON(url, data, timeoutMs = 12000, extraHeaders = {}) {
   const ctrl = new AbortController();
   const id = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -52,129 +59,178 @@ async function postJSON(url, data, timeoutMs = 12000, extraHeaders = {}) {
     return { okHTTP: r.ok, status: r.status, headers: r.headers, j, text };
   } finally { clearTimeout(id); }
 }
-
-// Disparo asíncrono que no bloquea la respuesta
 function fireAndForget(url, data, extraHeaders = {}) {
-  fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...extraHeaders },
-    body: JSON.stringify(data || {})
-  }).catch(() => {});
+  fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...extraHeaders }, body: JSON.stringify(data || {}) }).catch(() => {});
 }
+function normalizePorcentaje(x) {
+  if (typeof x !== 'number' || !isFinite(x)) return 0;
+  if (x <= 1) return Math.round(x * 100);
+  if (x > 100) return 100;
+  return Math.round(x);
+}
+function temaValido(tema, temas11) {
+  if (!tema || !Array.isArray(temas11)) return false;
+  const t = String(tema).trim().toLowerCase();
+  return temas11.some(x => String(x).trim().toLowerCase() === t);
+}
+function nowISO(){ return new Date().toISOString(); }
 
-// ────────────────────────── HANDLER ───────────────────────────
 export default async function handler(req, res) {
   setCORS(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(200).json({ ok:false, motivo:'POST only' });
 
   const action = String(req.query.action || '').toLowerCase();
-  if (req.method !== 'POST' || action !== 'login') {
-    return res.status(200).json({ ok: false, motivo: 'Invalid action' });
-  }
-
-  // Body de Wix: { email, codigo }
   const b = parseBody(req);
-  const correo = String((b.email ?? b.correo) || '').trim().toLowerCase();
-  const codigo = String((b.codigo ?? b.code) || '').trim().toUpperCase();
 
-  if (!correo || !codigo || !correo.includes('@')) {
-    return res.status(200).json({ ok: false, acceso: false, motivo: 'Parámetros inválidos' });
-  }
-  if (!GAS_VERIFICAR_URL) {
-    return res.status(200).json({ ok: false, acceso: false, motivo: 'AUREA_GAS_VERIFICAR_USUARIO_URL no configurado' });
-  }
-
-  const t0 = Date.now();
-  let gas, diag = { gasHost: '', attempt: 0, err: '' };
-  try { diag.gasHost = new URL(GAS_VERIFICAR_URL).host; } catch {}
-
-  // 1) Verificar en GAS (con 1 reintento si algo raro pasa)
-  try {
-    diag.attempt = 1;
-    gas = await postJSON(GAS_VERIFICAR_URL, { correo, codigo }, T_VERIFY_MS);
-    if (!gas?.j || typeof gas.j.ok !== 'boolean') throw new Error('Respuesta no JSON/ok de GAS');
-  } catch (e1) {
-    diag.err = String(e1?.message || e1);
+  // ───────── LOGIN (igual) ─────────
+  if (action === 'login') {
     try {
-      diag.attempt = 2;
-      gas = await postJSON(GAS_VERIFICAR_URL, { correo, codigo }, T_VERIFY_MS);
-    } catch (e2) {
-      try { res.setHeader('Aurea-Diag', `gasHost=${diag.gasHost}; err=${String(e2?.message||e2)}`); } catch {}
-      return res.status(200).json({ ok: false, acceso: false, motivo: 'Timeout verificar usuario', error: String(e2?.message || e2) });
-    }
-  }
-
-  // Propaga negativos del GAS tal cual (Wix ya los interpreta)
-  if (!gas?.j?.ok || !gas.j?.acceso) {
-    try { res.setHeader('Aurea-Diag', `gasHost=${diag.gasHost}; status=${gas?.status||'NA'}; attempt=${diag.attempt}`); } catch {}
-    return res.status(200).json(gas.j || { ok: false, acceso: false, motivo: 'Fallo GAS' });
-  }
-
-  // 2) Base de salida para Wix (lo que tu login.js espera)
-  const baseOut = {
-    ok: true,
-    acceso: true,
-    institucion: gas.j.institucion || '',
-    tipoInstitucion: String(gas.j.tipoInstitucion || '').toLowerCase(),
-    correoSOS: gas.j.correoSOS || '',
-    tienePendiente: !!gas.j.tienePendiente,
-    usuario: {
-      nombre: gas.j.usuario?.nombre || '',
-      apellido: gas.j.usuario?.apellido || '',
-      sexo: gas.j.usuario?.sexo || '',
-      fechaNacimiento: gas.j.usuario?.fechaNacimiento || '',
-      email: gas.j.usuario?.email || correo,
-      telefono: gas.j.usuario?.telefono || '',
-      correoEmergencia: gas.j.usuario?.correoEmergencia || '',
-      codigo: gas.j.usuario?.codigo || codigo,
-      testYaEnviado: !!gas.j.usuario?.testYaEnviado
-      // perfilEmocional: (se adjunta abajo si está en cache)
-    }
-  };
-
-  // 3) Perfil emocional desde cache (rápido, mejor no bloquear más de ~2.5s)
-  try {
-    const nombreCompleto = [baseOut.usuario.nombre || '', baseOut.usuario.apellido || ''].join(' ').trim();
-    const rPerfil = await postJSON(
-      PERFIL_CACHE_URL,
-      {
-        email: baseOut.usuario.email,
-        tipoInstitucion: baseOut.tipoInstitucion,
-        nombre: nombreCompleto,
-        institucion: baseOut.institucion
-      },
-      T_PERFIL_MS
-    );
-    if (rPerfil?.j?.ok && rPerfil.j.perfilEmocional) {
-      baseOut.usuario.perfilEmocional = rPerfil.j.perfilEmocional;
+      const correo = String((b.email ?? b.correo) || '').trim().toLowerCase();
+      const codigo = String(b.codigo || '').trim().toUpperCase();
+      if (!correo || !codigo || !correo.includes('@')) {
+        return res.status(200).json({ ok: false, acceso: false, motivo: 'Parámetros inválidos' });
+      }
+      const vr = await postJSON(GAS_VERIFICAR_URL, { correo, codigo }, T_VERIFY_MS);
+      if (!vr?.okHTTP || !vr?.j?.ok || !vr?.j?.acceso) {
+        return res.status(200).json(vr?.j || { ok: false, acceso: false, motivo: 'Fallo en verificación' });
+      }
+      const tipoInstitucion = String(vr.j.tipoInstitucion || '').toLowerCase();
+      const institucion = String(vr.j.institucion || '');
+      const usuario = {
+        nombre: vr.j.usuario?.nombre || '',
+        apellido: vr.j.usuario?.apellido || '',
+        sexo: vr.j.usuario?.sexo || '',
+        fechaNacimiento: vr.j.usuario?.fechaNacimiento || '',
+        email: vr.j.usuario?.email || correo,
+        telefono: vr.j.usuario?.telefono || '',
+        correoEmergencia: vr.j.usuario?.correoEmergencia || '',
+        codigo: vr.j.usuario?.codigo || codigo,
+        testYaEnviado: !!vr.j.usuario?.testYaEnviado
+      };
+      let perfilEmocional = {};
       try {
-        const cacheHdr = rPerfil.headers?.get?.('Aurea-Cache');
-        if (cacheHdr) res.setHeader('Aurea-Cache', cacheHdr);
+        const pr = await postJSON(GAS_GET_PERFIL_URL, { correo: usuario.email, tipoInstitucion, institucion }, T_GETPERFIL_MS);
+        if (pr?.okHTTP && pr?.j?.ok && pr.j.perfilEmocional) perfilEmocional = pr.j.perfilEmocional;
       } catch {}
+      return res.status(200).json({
+        ok: true,
+        acceso: true,
+        institucion,
+        tipoInstitucion,
+        correoSOS: vr.j.correoSOS || '',
+        tienePendiente: !!vr.j.tienePendiente,
+        usuario: { ...usuario, perfilEmocional }
+      });
+    } catch (err) {
+      return res.status(200).json({ ok:false, acceso:false, motivo:'Error inesperado', error:String(err) });
     }
-  } catch {}
+  }
 
-  // Headers de diagnóstico
-  res.setHeader('Aurea-Elapsedms', String(Date.now() - t0));
-  try { res.setHeader('Aurea-Diag', `gasHost=${diag.gasHost}; status=${gas?.status||'200'}; attempt=${diag.attempt}`); } catch {}
+  // ───────── CHAT ─────────
+  if (action === 'chat') {
+    const correo = String(b.email || b.correo || '').trim().toLowerCase();
+    const nombre = String(b.nombre || '').trim();
+    const codigo = String(b.codigo || '').trim().toUpperCase();
+    const tipoInstitucion = String(b.tipoInstitucion || '').trim().toLowerCase();
+    const institucion = String(b.institucion || '').trim();
+    const sexo = String(b.sexo || '').trim();
+    const fechaNacimiento = String(b.fechaNacimiento || '').trim();
+    const mensaje = String(b.mensaje || '').trim();
+    const calificaciones = b.perfilActual || b.calificaciones || {};
+    const historial = Array.isArray(b.historial) ? b.historial : [];
+    const sessionId = String(b.sessionId || '').trim();
+    const onceTemas = Array.isArray(b.onceTemas) ? b.onceTemas : [];
 
-  // 4) Respuesta inmediata a Wix
-  res.status(200).json(baseOut);
-
-  // 5) Si falta “X” en AW, dispara analizar-test en segundo plano (invisible)
-  try {
-    const faltaX = (!!baseOut.tienePendiente) || (!baseOut.usuario.testYaEnviado);
-    if (faltaX && ANALIZAR_TEST_URL && AUREA_INTERNAL_TOKEN) {
-      fireAndForget(
-        ANALIZAR_TEST_URL,
-        {
-          tipoInstitucion: baseOut.tipoInstitucion,
-          email: baseOut.usuario.email,
-          correoSOS: baseOut.correoSOS || '',
-          codigo: baseOut.usuario.codigo
-        },
-        { 'X-Internal-Token': AUREA_INTERNAL_TOKEN }
-      );
+    if (!correo || !codigo || !tipoInstitucion || !mensaje) {
+      return res.status(200).json({ ok:false, error:'Parametros incompletos' });
     }
-  } catch {}
+
+    const r = await postJSON(
+      AUREA_CHAT_URL,
+      { mensaje, correo, nombre, institucion, tipoInstitucion, sexo, fechaNacimiento, codigo, calificaciones, historial, sessionId },
+      T_CHAT_MS,
+      { 'X-Internal-Token': AUREA_INTERNAL_TOKEN }
+    );
+    if (!r?.j?.ok) {
+      return res.status(200).json({ ok:false, error:r?.text || 'Fallo en aurea' });
+    }
+
+    const resp = r.j;
+    const tema = String(resp.temaDetectado || '').trim();
+    const calif = Number(resp.calificacion || 0);
+    const porc = normalizePorcentaje(resp.porcentaje);
+    const certeza = String(resp.certeza || '').trim();
+    const SOS = String(resp.SOS || 'OK').toUpperCase();
+
+    // perfilSugerido
+    let perfilSugerido = (resp.perfilSugerido && typeof resp.perfilSugerido === 'object') ? resp.perfilSugerido : {};
+    if (!perfilSugerido || Object.keys(perfilSugerido).length === 0) {
+      if (tema && porc >= UMBRAL_PORC && temaValido(tema, onceTemas)) {
+        perfilSugerido = { [tema]: calif };
+      }
+    }
+
+    // Logs (best-effort)
+    try {
+      // Detalle por mensaje
+      fireAndForget(GAS_LOG_CALIFICACIONES_URL, {
+        correo, nombre, institucion, tipoInstitucion,
+        mensajeUsuario: mensaje,
+        tema,
+        calificacionAnterior: (typeof calificaciones?.[tema] === 'number' ? calificaciones[tema] : ''),
+        nuevaCalificacion: calif,
+        certeza,
+        justificacion: certeza,
+        fecha: nowISO()
+      });
+      // Acumulador por institución+tema
+      if (tema) fireAndForget(GAS_TEMAS_INSTITUCION_URL, { institucion, tema });
+      // Conteo simple por tema
+      if (tema) fireAndForget(GAS_CONTAR_TEMA_URL, {
+        correo, tema, evento: 'mensaje', valor: 1, extra: { institucion }
+      });
+    } catch {}
+
+    return res.status(200).json({
+      ok: true,
+      mensajeUsuario: String(resp.mensajeUsuario || 'Gracias por compartir.'),
+      temaDetectado: tema,
+      porcentaje: porc,
+      calificacion: calif,
+      certeza,
+      SOS,
+      perfilSugerido
+    });
+  }
+
+  // ───────── FINALIZAR / AUTOSAVE ─────────
+  if (action === 'finalizar' || action === 'autosave') {
+    const correo = String(b.email || b.correo || '').trim().toLowerCase();
+    const codigo = String(b.codigo || '').trim().toUpperCase();
+    const tipoInstitucion = String(b.tipoInstitucion || '').trim().toLowerCase();
+    const institucion = String(b.institucion || '').trim();
+    const perfilCompleto = b.perfilCompleto || {};
+    const notas = String(b.notas || '').trim();
+    const updatedAt = String(b.updatedAt || nowISO());
+    const sessionId = String(b.sessionId || '').trim();
+
+    if (!correo || !codigo || !tipoInstitucion || !perfilCompleto || !GAS_UPDATE_PROFILE_URL) {
+      return res.status(200).json({ ok:false, error:'Parametros incompletos o GAS_UPDATE_PROFILE_URL ausente' });
+    }
+
+    const payload = {
+      correo, codigo, tipoInstitucion, institucion,
+      perfilCompleto, notas, updatedAt, sessionId,
+      modo: (action === 'autosave' ? 'AUTOSAVE' : 'FINAL')
+    };
+
+    const r = await postJSON(GAS_UPDATE_PROFILE_URL, payload, T_SAVE_MS);
+    if (!r?.okHTTP) {
+      return res.status(200).json({ ok:false, error:'Fallo al guardar perfil en GAS', detalle:r?.text || '' });
+    }
+    return res.status(200).json({ ok:true });
+  }
+
+  return res.status(200).json({ ok:false, motivo:'Invalid action' });
 }
