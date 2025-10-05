@@ -196,4 +196,30 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
       fecha: new Date().toISOString(),
       sessionId
     };
-    fireAndForget(GAS_LOG_
+    // <<<< ESTA LÍNEA QUEDÓ CORTADA EN TU DEPLOY; AQUÍ COMPLETA >>>>
+    fireAndForget(GAS_LOG_CALIFICACIONES_URL, payloadLog);
+
+    // Temas por institución y conteo
+    if (temaDetectado) {
+      fireAndForget(GAS_TEMAS_INSTITUCION_URL, { institucion, tema: temaDetectado });
+      fireAndForget(GAS_CONTAR_TEMA_URL, { correo, tema: temaDetectado, evento: "mensaje", valor: 1, extra: { institucion } });
+    }
+
+    // 5) Respuesta al orquestador/FE
+    return res.status(200).json({
+      ok: true,
+      mensajeUsuario,
+      temaDetectado,
+      calificacion,
+      porcentaje,
+      justificacion,
+      SOS,
+      // Sugerencia de perfil inmediato (el FE la usa para fusionar temporal)
+      perfilSugerido: (temaDetectado ? { [temaDetectado]: calificacion } : {})
+    });
+
+  } catch (err) {
+    console.error("🔥 Error en aurea.js:", err);
+    return res.status(500).json({ ok: false, error: "Error interno en AUREA" });
+  }
+}
