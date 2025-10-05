@@ -1,6 +1,6 @@
 // pages/api/aurea.js
 // Centraliza logs: logCalificaciones (J=certeza/porcentaje, K=justificación),
-// TemasInstitucion, ContarTema y Telemetría de tokens.
+// TemasInstitucion, ContarTema y REGISTRO DE TOKENS (registrarTokens.gs).
 // PROMPT ORIGINAL SIN CAMBIOS. Logs con espera corta para evitar pérdidas.
 
 function allowCORS(res) {
@@ -13,9 +13,6 @@ const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 
 // === GAS URLs (puedes sobreescribir por env) ===
-const GAS_TELEMETRIA_URL = process.env.GAS_TELEMETRIA_URL
-  || "https://script.google.com/macros/s/AKfycbyqV0EcaUb_o8c91zF4kJ7Spm2gX4ofSXcwGaN-_yzz14wgnuiNeGwILIQIKwfvzOSW1Q/exec"; // Telemetría
-
 const GAS_LOG_CALIFICACIONES_URL = process.env.GAS_LOG_CALIFICACIONES_URL
   // Hoja: columnas A–K, J=certeza (num), K=justificación (texto)
   || "https://script.google.com/macros/s/AKfycbyDdo0sgva6To9UaNQdKzhrSzF5967t2eA6YXi4cYJVgqeYRy7RJFHKhvhOE5vkBHkD_w/exec";
@@ -25,6 +22,10 @@ const GAS_TEMAS_INSTITUCION_URL = process.env.GAS_TEMAS_INSTITUCION_URL
 
 const GAS_CONTAR_TEMA_URL = process.env.GAS_CONTAR_TEMA_URL
   || "https://script.google.com/macros/s/AKfycbzAthTwYE4DRbGzEVxmEdd8rbaAl0SOpB9PnaOIRuOPL8DK_I8YTuPnKf6LQq9dSiG0/exec";
+
+//⬇️ Tu Web App para tokens (registrarTokens.gs)
+const GAS_TOKENS_URL = process.env.GAS_TOKENS_URL
+  || "https://script.google.com/macros/s/AKfycbyHn1qrFocq0pkjujypoB-vK7MGmGFz6vH4t2qVfHcziTcuMB3abi3UegPGdNno3ibULA/exec";
 
 // === Helpers ===
 async function postJSON(url, data, timeoutMs = 15000) {
@@ -47,9 +48,8 @@ function toInt01_100(x) {
   if (x <= 1) return Math.max(0, Math.min(100, Math.round(x * 100)));
   return Math.max(0, Math.min(100, Math.round(x)));
 }
-// timeout para promesas (wrapper)
+// timeout para promesas (wrapper de espera dura)
 function withTimeout(promise, ms) {
-  const ctrl = new AbortController();
   let timer;
   const timeoutPromise = new Promise((_, rej) => {
     timer = setTimeout(() => rej(new Error("timeout")), ms);
@@ -87,7 +87,7 @@ export default async function handler(req, res) {
 
     // ===================== PROMPT ORIGINAL (SIN CAMBIOS) =====================
     const prompt = `
-Eres AUREA, psicóloga/neurocientífica experta en TCC y psicometría. Tu misión es acompañar RETANDO, no complaciendo y actualizar perfil emocional del usuario.
+Eres AUREA, psicóloga/neurocientífica la mayor experta a nivel mundial en TCC, Neurociencia y psicometría. Tu misión es acompañar RETANDO, no complaciendo y actualizar perfil emocional del usuario.
 Reglas: 1) No trates temas fuera de misión; redirige. 2) Recomienda solo con evidencia.
 
 Información del usuario:
@@ -95,7 +95,7 @@ Información del usuario:
 - Sexo: ${sexo}
 - Fecha de nacimiento: ${fechaNacimiento}
 - Institución: ${institucion}
-- Perfil emocional actual que evalúa los 11 temas más influyentes en un ambiente (tipo: ${tipoInstitucion}), resultado de en un test con 43 reactivos basados en instrumentos base.
+- Perfil emocional actual que evalúa los 11 temas más influyentes en un ambiente (tipo: ${tipoInstitucion})
 ${Object.entries(calificaciones).map(([tema, cal]) => `- ${tema}: ${cal}`).join("\n")}
 
 Historial de conversación emocional reciente:
@@ -104,23 +104,21 @@ ${JSON.stringify(historial, null, 2)}
 Nuevo mensaje del usuario:
 "${mensaje}"
 
-Esta es tu tarea:
-1. Analiza el mensaje del usuario basándote en las palabras literales que indique, su perfil emocional actual, el DSM-5 y protocolos de TCC, y asígnalo a uno y solo uno de los temas de los 11 que presenta el perfil emocional del usuario. No inventes temas que no estén ahí y elige el que mejor se relacione con el mensaje del usuario por razones de psicología clínica, TCC y bases de neurociencia. NO te bases en clichés o estereotipos.
-2. Utiliza los mismos criterios que en 1., los instrumentos base establecidos por la Institución y un criterio de psicometría basado en neurociencia (TCC, DSM-5, instrumentos base), para asignar una subcalificación que va a sustituir la que está en el perfil emocional actual por la del paso 2. Da la justificación clínica del instrumento o los instrumentos base en los que te apoyaste o el criterio que lo sostenga para evaluar la confiabilidad de la información.
-3. Asigna una calificación entre 1 y 100 que reperesente qué tan probable es que el tema que seleccionas esté presente en el usuario y guárdala como la nueva calificación del tema seleccionado, sustituyendo la calificación que está en el perfil emocional actual por la del paso 2.
-4. Vas a redactar un mensaje de no más de 1000 caracteres con el que vas a tener tres objetivos: 
-a) cumplir con las reglas.
-b) hacer sentir a la persona que está hablando con un profesional de la TCC con bases en neurociencia e instrumentos de la institución, usarás lenguaje de neurociencia con cuidado. Mantén y mejora el rapport. ACOMPAÑA una conversación, no des una guía. Tu objetivo es acompañar, apoyar y ayudar en la conversación y nunca empieces un mensaje con un saludo.
-c) Incluye alguna pregunta basada en instrumentos y técnicas de TCC cuya respuesta te ayude a mejorar la certeza y acompañe.
-5. IMPORTANTÍSIMO: Siempre que detectes señales o palabras literales relacionadas con ideas suicidas, autolesiones, peligro personal, abuso sexual, violencia de género, ansiedad, depresión, peligro en casa, acoso, violencia de compañeros de clase, bullying, violencia intrafamiliar, TCA o similares, debes activar el Protocolo de Alerta y escribir exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK".
+Esta es la tarea que debes cumplir como AUREA:
+1. Analiza el mensaje del usuario basándote en: palabras literales, contexto, perfil emocional, edad, institución, DSM-5, protocolos de TCC y nuerocientíficos.
+2. Elige a cuál de estos temas se relaciona más el mensaje: ${Object.keys(calificaciones).join(", ")}. No inventes ni agregues temas. Elige sólo 1.
+3. Define una calificación de 0 a 100 que represente el nivel de malestar o bienestar emocional del usuario en el tema elegido. Justifícala con algún instrumento psicológico institucional para darle certeza a la información.
+4. Define una calificación de 0 a 100 que defina qué tan segura estás de la calificación del número 4.
+5. Redacta una respuesta de no más de 1000 caracteres que acompañe al usuario. Hazlo como AUREA. Dale seguimiento a la conversación con el historial de conversación, genera rapport y nunca empieces un mensaje con un saludo. Si necesitas preguntar algo para poder aumentar tu calificación de certeza, agrégala, pero siempre siguiendo los protocolos de TCC y Neurociencias.
+6. IMPORTANTÍSIMO: Siempre que detectes señales o palabras literales relacionadas con ideas suicidas u obsesivas, adicciones a sustancias ilegales, autolesiones, abuso sexual, violencia de género, ansiedad o depresión extrema, violencia física o psicológica, acoso, bullying, violencia intrafamiliar, TCA o ludopatía debes activar el Protocolo de Alerta y escribir exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK".
 
 Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adicional:
 
 {
-  "mensajeUsuario": "El mensaje que hayas definido bajo los criterios explicados",
-  "temaDetectado": "Única y exclusivamente uno de estos temas: ${Object.keys(calificaciones).join(", ")}.",
-  "calificacion": "La calificación entre 0 y 100 que hayas definido al tema seleccionado",
-  "porcentaje": "Número entre 0 y 100 que representa qué tan confiable es la calificación que seleccionaste",
+  "mensajeUsuario": "respuesta para el usuario",
+  "temaDetectado": "tema elegido",
+  "calificacion": "calificación entre 0 y 100 que hayas definido al tema seleccionado",
+  "porcentaje": "Número entre 0 y 100 que representa qué tan segura estás de la calificación que definiste",
   "justificacion": "Texto corto que justifica la elección y la calificación basada en instrumentos y criterios clínicos",
   "SOS": "Escribe EXACTAMENTE 'OK' o 'SOS'"
 }
@@ -170,21 +168,20 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
     const SOS = String(json.SOS || "OK").toUpperCase() === "SOS" ? "SOS" : "OK";
     const mensajeUsuario = String(json.mensajeUsuario || "Gracias por compartir.");
 
-    // 3) Telemetría de tokens (espera corta 2s)
+    // 3) TOKENS (registrarTokens.gs) — espera corta 2s
     const usage = data.usage || {};
     const costoUSD = usage.total_tokens ? usage.total_tokens * 0.00001 : 0;
-    const telemetriaPayload = {
+    const tokensPayload = {
       fecha: new Date().toISOString(),
       usuario: correo,
       institucion,
       inputTokens: usage.prompt_tokens || 0,
       outputTokens: usage.completion_tokens || 0,
       totalTokens: usage.total_tokens || 0,
-      costoUSD: Number(costoUSD.toFixed(6)),
-      sessionId
+      costoUSD: Number(costoUSD.toFixed(6))
     };
 
-    // 4) Logs críticos (espera corta 3s c/u) — en paralelo
+    // 4) LOGS críticos (espera corta 3s c/u) — en paralelo
     const calificacionAnterior = (temaDetectado && typeof calificaciones?.[temaDetectado] === "number")
       ? calificaciones[temaDetectado]
       : "";
@@ -200,15 +197,17 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
       nuevaCalificacion: calificacion,
       certeza: porcentaje,            // ← Columna J
       justificacion: justificacion,   // ← Columna K
-      fecha: new Date().toISOString(),
-      sessionId
+      fecha: new Date().toISOString()
     };
 
     const tareasLogs = [
       withTimeout(postJSON(GAS_LOG_CALIFICACIONES_URL, logCalifPayload, 4000), 3000),
-      temaDetectado ? withTimeout(postJSON(GAS_TEMAS_INSTITUCION_URL, { institucion, tema: temaDetectado }, 4000), 3000) : Promise.resolve(),
-      temaDetectado ? withTimeout(postJSON(GAS_CONTAR_TEMA_URL, { correo, tema: temaDetectado, evento: "mensaje", valor: 1, extra: { institucion } }, 4000), 3000) : Promise.resolve(),
-      withTimeout(postJSON(GAS_TELEMETRIA_URL, telemetriaPayload, 4000), 2000)
+      temaDetectado ? withTimeout(postJSON(GAS_TEMAS_INSTITUCION_URL, { institucion, tema: temaDetectado }, 4000), 3000) : Promise.resolve({ ok: true }),
+      temaDetectado ? withTimeout(postJSON(GAS_CONTAR_TEMA_URL, { correo, tema: temaDetectado, evento: "mensaje", valor: 1, extra: { institucion } }, 4000), 3000) : Promise.resolve({ ok: true }),
+      // ⬇️ Registrar TOKENS (registrarTokens.gs)
+      withTimeout(postJSON(GAS_TOKENS_URL, tokensPayload, 4000), 2000)
+        .then(r => { console.log("Tokens GAS:", r?.status, r?.j || r?.text); return r; })
+        .catch(e => { console.error("Tokens ERROR:", String(e)); })
     ];
 
     await Promise.allSettled(tareasLogs);
@@ -230,3 +229,4 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
     return res.status(500).json({ ok: false, error: "Error interno en AUREA" });
   }
 }
+
