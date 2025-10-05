@@ -1,8 +1,8 @@
-// /pages/api/orquestador.js — login intacto, chat/finalizar/autosave + logs de temas
+// /pages/api/orquestador.js — orquesta login/chat/finalizar; logs ahora vive en aurea.js
 
 const ORIGIN = process.env.FRONTEND_ORIGIN || 'https://www.positronconsulting.com';
 
-// GAS URLs (tuyas)
+// GAS URLs para login/final
 const GAS_VERIFICAR_URL = process.env.GAS_VERIFICAR_URL
   || 'https://script.google.com/macros/s/AKfycbzqGPWKipeeHafOQAOz8_3lL0nyVkJMgbAWAD0nlti4qKQQ4RITQlRPmDCCR84UJ5zr9w/exec';
 
@@ -12,19 +12,9 @@ const GAS_GET_PERFIL_URL = process.env.GAS_GET_PERFIL_URL
 const GAS_UPDATE_PROFILE_URL = process.env.GAS_UPDATE_PROFILE_URL
   || 'https://script.google.com/macros/s/AKfycbx9aufQ1sH_VUZ3Ihmec1srGaZmOhpF3DBDVyrzg3wOOLUNpp_qLFJ_caUxr5pyzmu_1w/exec';
 
-const GAS_LOG_CALIFICACIONES_URL = process.env.GAS_LOG_CALIFICACIONES_URL
-  || 'https://script.google.com/macros/s/AKfycbyDdo0sgva6To9UaNQdKzhrSzF5967t2eA6YXi4cYJVgqeYRy7RJFHKhvhOE5vkBHkD_w/exec';
-
-const GAS_TEMAS_INSTITUCION_URL = process.env.GAS_TEMAS_INSTITUCION_URL
-  || 'https://script.google.com/macros/s/AKfycbzJ1hbX6tMRA7qmd9JTRqDNQ9m46LBLqadXQu5Z87wfTeYrxhakC4vqoVtD9zHwwVy5bw/exec';
-
-const GAS_CONTAR_TEMA_URL = process.env.GAS_CONTAR_TEMA_URL
-  || 'https://script.google.com/macros/s/AKfycbzAthTwYE4DRbGzEVxmEdd8rbaAl0SOpB9PnaOIRuOPL8DK_I8YTuPnKf6LQq9dSiG0/exec';
-
-// Backend interno
+// Backend AUREA
 const AUREA_CHAT_URL = process.env.AUREA_CHAT_URL
   || 'https://aurea-backend-two.vercel.app/api/aurea';
-
 const AUREA_INTERNAL_TOKEN = process.env.AUREA_INTERNAL_TOKEN || '';
 
 // Config
@@ -32,9 +22,9 @@ const UMBRAL_PORC = 60;
 const T_VERIFY_MS = 30000;
 const T_GETPERFIL_MS = 8000;
 const T_CHAT_MS = 35000;
-const T_LOG_MS = 12000;
 const T_SAVE_MS = 15000;
 
+// Utils
 function setCORS(res) {
   res.setHeader('Access-Control-Allow-Origin', ORIGIN);
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -59,9 +49,6 @@ async function postJSON(url, data, timeoutMs = 12000, extraHeaders = {}) {
     return { okHTTP: r.ok, status: r.status, headers: r.headers, j, text };
   } finally { clearTimeout(id); }
 }
-function fireAndForget(url, data, extraHeaders = {}) {
-  fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...extraHeaders }, body: JSON.stringify(data || {}) }).catch(() => {});
-}
 function normalizePorcentaje(x) {
   if (typeof x !== 'number' || !isFinite(x)) return 0;
   if (x <= 1) return Math.round(x * 100);
@@ -75,6 +62,7 @@ function temaValido(tema, temas11) {
 }
 function nowISO(){ return new Date().toISOString(); }
 
+// Handler
 export default async function handler(req, res) {
   setCORS(res);
   if (req.method === 'OPTIONS') return res.status(200).end();
@@ -83,7 +71,7 @@ export default async function handler(req, res) {
   const action = String(req.query.action || '').toLowerCase();
   const b = parseBody(req);
 
-  // ───────── LOGIN (igual) ─────────
+  // ───────── LOGIN ─────────
   if (action === 'login') {
     try {
       const correo = String((b.email ?? b.correo) || '').trim().toLowerCase();
@@ -127,7 +115,7 @@ export default async function handler(req, res) {
     }
   }
 
-  // ───────── CHAT ─────────
+  // ───────── CHAT (sin logs; los hace AUREA) ─────────
   if (action === 'chat') {
     const correo = String(b.email || b.correo || '').trim().toLowerCase();
     const nombre = String(b.nombre || '').trim();
@@ -160,37 +148,13 @@ export default async function handler(req, res) {
     const tema = String(resp.temaDetectado || '').trim();
     const calif = Number(resp.calificacion || 0);
     const porc = normalizePorcentaje(resp.porcentaje);
-    const certeza = String(resp.certeza || '').trim();
     const SOS = String(resp.SOS || 'OK').toUpperCase();
 
-    // perfilSugerido
-    let perfilSugerido = (resp.perfilSugerido && typeof resp.perfilSugerido === 'object') ? resp.perfilSugerido : {};
-    if (!perfilSugerido || Object.keys(perfilSugerido).length === 0) {
-      if (tema && porc >= UMBRAL_PORC && temaValido(tema, onceTemas)) {
-        perfilSugerido = { [tema]: calif };
-      }
+    // Construir perfilSugerido local (umbral 60 y tema dentro de los 11)
+    let perfilSugerido = {};
+    if (tema && porc >= UMBRAL_PORC && temaValido(tema, onceTemas)) {
+      perfilSugerido = { [tema]: calif };
     }
-
-    // Logs (best-effort)
-    try {
-      // Detalle por mensaje
-      fireAndForget(GAS_LOG_CALIFICACIONES_URL, {
-        correo, nombre, institucion, tipoInstitucion,
-        mensajeUsuario: mensaje,
-        tema,
-        calificacionAnterior: (typeof calificaciones?.[tema] === 'number' ? calificaciones[tema] : ''),
-        nuevaCalificacion: calif,
-        certeza,
-        justificacion: certeza,
-        fecha: nowISO()
-      });
-      // Acumulador por institución+tema
-      if (tema) fireAndForget(GAS_TEMAS_INSTITUCION_URL, { institucion, tema });
-      // Conteo simple por tema
-      if (tema) fireAndForget(GAS_CONTAR_TEMA_URL, {
-        correo, tema, evento: 'mensaje', valor: 1, extra: { institucion }
-      });
-    } catch {}
 
     return res.status(200).json({
       ok: true,
@@ -198,7 +162,7 @@ export default async function handler(req, res) {
       temaDetectado: tema,
       porcentaje: porc,
       calificacion: calif,
-      certeza,
+      justificacion: String(resp.justificacion || ''),
       SOS,
       perfilSugerido
     });
@@ -227,7 +191,7 @@ export default async function handler(req, res) {
 
     const r = await postJSON(GAS_UPDATE_PROFILE_URL, payload, T_SAVE_MS);
     if (!r?.okHTTP) {
-      return res.status(200).json({ ok:false, error:'Fallo al guardar perfil en GAS', detalle:r?.text || '' });
+      return res.status(200).json({ ok:false, error:'Fallo al guardar perfil en GAS', detalle: r?.text || '' });
     }
     return res.status(200).json({ ok:true });
   }
