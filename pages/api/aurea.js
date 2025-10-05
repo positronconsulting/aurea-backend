@@ -1,6 +1,7 @@
 // pages/api/aurea.js
 // Centraliza logs: logCalificaciones (J=certeza/porcentaje, K=justificación),
-// TemasInstitucion, ContarTema, Telemetría tokens. PROMPT ORIGINAL SIN CAMBIOS.
+// TemasInstitucion, ContarTema y Telemetría de tokens.
+// PROMPT ORIGINAL SIN CAMBIOS. Logs con espera corta para evitar pérdidas.
 
 function allowCORS(res) {
   res.setHeader("Access-Control-Allow-Origin", process.env.FRONTEND_ORIGIN || "https://www.positronconsulting.com");
@@ -16,7 +17,7 @@ const GAS_TELEMETRIA_URL = process.env.GAS_TELEMETRIA_URL
   || "https://script.google.com/macros/s/AKfycbyqV0EcaUb_o8c91zF4kJ7Spm2gX4ofSXcwGaN-_yzz14wgnuiNeGwILIQIKwfvzOSW1Q/exec"; // Telemetría
 
 const GAS_LOG_CALIFICACIONES_URL = process.env.GAS_LOG_CALIFICACIONES_URL
-  // Tu hoja: columnas A–K, J=certeza (num) y K=justificación (texto)
+  // Hoja: columnas A–K, J=certeza (num), K=justificación (texto)
   || "https://script.google.com/macros/s/AKfycbyDdo0sgva6To9UaNQdKzhrSzF5967t2eA6YXi4cYJVgqeYRy7RJFHKhvhOE5vkBHkD_w/exec";
 
 const GAS_TEMAS_INSTITUCION_URL = process.env.GAS_TEMAS_INSTITUCION_URL
@@ -41,14 +42,22 @@ async function postJSON(url, data, timeoutMs = 15000) {
     return { ok: r.ok, status: r.status, j, text };
   } finally { clearTimeout(t); }
 }
-function fireAndForget(url, data) {
-  fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data || {}) })
-    .catch(() => {});
-}
 function toInt01_100(x) {
   if (typeof x !== "number" || !isFinite(x)) return 0;
   if (x <= 1) return Math.max(0, Math.min(100, Math.round(x * 100)));
   return Math.max(0, Math.min(100, Math.round(x)));
+}
+// timeout para promesas (wrapper)
+function withTimeout(promise, ms) {
+  const ctrl = new AbortController();
+  let timer;
+  const timeoutPromise = new Promise((_, rej) => {
+    timer = setTimeout(() => rej(new Error("timeout")), ms);
+  });
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    timeoutPromise
+  ]);
 }
 
 export default async function handler(req, res) {
@@ -156,15 +165,15 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
     // 2) Normalización de outputs esperados
     const temaDetectado = String(json.temaDetectado || "").trim();
     const calificacion = toInt01_100(Number(json.calificacion));
-    const porcentaje = toInt01_100(Number(json.porcentaje)); // certeza 0..100 para Hoja J
+    const porcentaje = toInt01_100(Number(json.porcentaje)); // certeza 0..100 -> Hoja J
     const justificacion = String(json.justificacion || "").trim();
     const SOS = String(json.SOS || "OK").toUpperCase() === "SOS" ? "SOS" : "OK";
     const mensajeUsuario = String(json.mensajeUsuario || "Gracias por compartir.");
 
-    // 3) Telemetría de tokens (best-effort)
+    // 3) Telemetría de tokens (espera corta 2s)
     const usage = data.usage || {};
     const costoUSD = usage.total_tokens ? usage.total_tokens * 0.00001 : 0;
-    fireAndForget(GAS_TELEMETRIA_URL, {
+    const telemetriaPayload = {
       fecha: new Date().toISOString(),
       usuario: correo,
       institucion,
@@ -173,16 +182,14 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
       totalTokens: usage.total_tokens || 0,
       costoUSD: Number(costoUSD.toFixed(6)),
       sessionId
-    });
+    };
 
-    // 4) LOGS centrales (best-effort) — mapeo para tu Hoja:
-    //    J = certeza (num 0–100) -> usamos "porcentaje"
-    //    K = justificación (texto) -> usamos "justificacion"
+    // 4) Logs críticos (espera corta 3s c/u) — en paralelo
     const calificacionAnterior = (temaDetectado && typeof calificaciones?.[temaDetectado] === "number")
       ? calificaciones[temaDetectado]
       : "";
 
-    const payloadLog = {
+    const logCalifPayload = {
       correo,
       nombre,
       institucion,
@@ -196,14 +203,15 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
       fecha: new Date().toISOString(),
       sessionId
     };
-    // <<<< ESTA LÍNEA QUEDÓ CORTADA EN TU DEPLOY; AQUÍ COMPLETA >>>>
-    fireAndForget(GAS_LOG_CALIFICACIONES_URL, payloadLog);
 
-    // Temas por institución y conteo
-    if (temaDetectado) {
-      fireAndForget(GAS_TEMAS_INSTITUCION_URL, { institucion, tema: temaDetectado });
-      fireAndForget(GAS_CONTAR_TEMA_URL, { correo, tema: temaDetectado, evento: "mensaje", valor: 1, extra: { institucion } });
-    }
+    const tareasLogs = [
+      withTimeout(postJSON(GAS_LOG_CALIFICACIONES_URL, logCalifPayload, 4000), 3000),
+      temaDetectado ? withTimeout(postJSON(GAS_TEMAS_INSTITUCION_URL, { institucion, tema: temaDetectado }, 4000), 3000) : Promise.resolve(),
+      temaDetectado ? withTimeout(postJSON(GAS_CONTAR_TEMA_URL, { correo, tema: temaDetectado, evento: "mensaje", valor: 1, extra: { institucion } }, 4000), 3000) : Promise.resolve(),
+      withTimeout(postJSON(GAS_TELEMETRIA_URL, telemetriaPayload, 4000), 2000)
+    ];
+
+    await Promise.allSettled(tareasLogs);
 
     // 5) Respuesta al orquestador/FE
     return res.status(200).json({
@@ -214,7 +222,6 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
       porcentaje,
       justificacion,
       SOS,
-      // Sugerencia de perfil inmediato (el FE la usa para fusionar temporal)
       perfilSugerido: (temaDetectado ? { [temaDetectado]: calificacion } : {})
     });
 
