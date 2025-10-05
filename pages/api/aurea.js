@@ -1,7 +1,7 @@
 // pages/api/aurea.js
 // Centraliza logs: logCalificaciones (J=certeza/porcentaje, K=justificación),
 // TemasInstitucion, ContarTema y REGISTRO DE TOKENS (registrarTokens.gs).
-// PROMPT ORIGINAL SIN CAMBIOS. Logs con espera corta para evitar pérdidas.
+// PROMPT ORIGINAL SIN CAMBIOS. Logs con espera corta (ajustada) para evitar pérdidas.
 
 function allowCORS(res) {
   res.setHeader("Access-Control-Allow-Origin", process.env.FRONTEND_ORIGIN || "https://www.positronconsulting.com");
@@ -14,7 +14,6 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 
 // === GAS URLs (puedes sobreescribir por env) ===
 const GAS_LOG_CALIFICACIONES_URL = process.env.GAS_LOG_CALIFICACIONES_URL
-  // Hoja: columnas A–K, J=certeza (num), K=justificación (texto)
   || "https://script.google.com/macros/s/AKfycbyDdo0sgva6To9UaNQdKzhrSzF5967t2eA6YXi4cYJVgqeYRy7RJFHKhvhOE5vkBHkD_w/exec";
 
 const GAS_TEMAS_INSTITUCION_URL = process.env.GAS_TEMAS_INSTITUCION_URL
@@ -48,7 +47,6 @@ function toInt01_100(x) {
   if (x <= 1) return Math.max(0, Math.min(100, Math.round(x * 100)));
   return Math.max(0, Math.min(100, Math.round(x)));
 }
-// timeout para promesas (wrapper de espera dura)
 function withTimeout(promise, ms) {
   let timer;
   const timeoutPromise = new Promise((_, rej) => {
@@ -76,7 +74,7 @@ export default async function handler(req, res) {
       institucion,
       sexo,
       fechaNacimiento,
-      calificaciones = {},  // perfil actual (11 temas -> 0..100)
+      calificaciones = {},
       historial = [],
       sessionId = ""
     } = req.body || {};
@@ -168,7 +166,7 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
     const SOS = String(json.SOS || "OK").toUpperCase() === "SOS" ? "SOS" : "OK";
     const mensajeUsuario = String(json.mensajeUsuario || "Gracias por compartir.");
 
-    // 3) TOKENS (registrarTokens.gs) — espera corta 2s
+    // 3) TOKENS (registrarTokens.gs) — espera ajustada 5s
     const usage = data.usage || {};
     const costoUSD = usage.total_tokens ? usage.total_tokens * 0.00001 : 0;
     const tokensPayload = {
@@ -181,7 +179,7 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
       costoUSD: Number(costoUSD.toFixed(6))
     };
 
-    // 4) LOGS críticos (espera corta 3s c/u) — en paralelo
+    // 4) LOGS críticos (espera corta) — en paralelo
     const calificacionAnterior = (temaDetectado && typeof calificaciones?.[temaDetectado] === "number")
       ? calificaciones[temaDetectado]
       : "";
@@ -204,10 +202,10 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
       withTimeout(postJSON(GAS_LOG_CALIFICACIONES_URL, logCalifPayload, 4000), 3000),
       temaDetectado ? withTimeout(postJSON(GAS_TEMAS_INSTITUCION_URL, { institucion, tema: temaDetectado }, 4000), 3000) : Promise.resolve({ ok: true }),
       temaDetectado ? withTimeout(postJSON(GAS_CONTAR_TEMA_URL, { correo, tema: temaDetectado, evento: "mensaje", valor: 1, extra: { institucion } }, 4000), 3000) : Promise.resolve({ ok: true }),
-      // ⬇️ Registrar TOKENS (registrarTokens.gs)
-      withTimeout(postJSON(GAS_TOKENS_URL, tokensPayload, 4000), 2000)
+      // ⬇️ Registrar TOKENS (registrarTokens.gs) con margen extra
+      withTimeout(postJSON(GAS_TOKENS_URL, tokensPayload, 7000), 5000)
         .then(r => { console.log("Tokens GAS:", r?.status, r?.j || r?.text); return r; })
-        .catch(e => { console.error("Tokens ERROR:", String(e)); })
+        .catch(e => { console.warn("Tokens WARN:", String(e)); })
     ];
 
     await Promise.allSettled(tareasLogs);
