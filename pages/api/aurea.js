@@ -11,6 +11,7 @@ function allowCORS(res) {
 
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 15000); // ⏱️ timeout duro para evitar AbortError
 
 // === GAS URLs (puedes sobreescribir por env) ===
 const GAS_LOG_CALIFICACIONES_URL = process.env.GAS_LOG_CALIFICACIONES_URL
@@ -42,10 +43,37 @@ async function postJSON(url, data, timeoutMs = 15000) {
     return { ok: r.ok, status: r.status, j, text };
   } finally { clearTimeout(t); }
 }
+
 function toInt01_100(x) {
   if (typeof x !== "number" || !isFinite(x)) return 0;
   if (x <= 1) return Math.max(0, Math.min(100, Math.round(x * 100)));
   return Math.max(0, Math.min(100, Math.round(x)));
+}
+
+// ⏱️ fetch con timeout
+async function withTimeoutFetch(url, options = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(id);
+  }
+}
+
+// 🔁 reintentos exponenciales para OpenAI/GAS en 5xx o AbortError
+async function retry(fn, { tries = 3, baseDelay = 400 } = {}) {
+  let lastErr;
+  for (let i = 1; i <= tries; i++) {
+    try { return await fn(); } catch (err) {
+      lastErr = err;
+      const isAbort = err?.name === "AbortError";
+      const is5xx = (typeof err?.status === "number") && err.status >= 500;
+      if (i === tries || (!isAbort && !is5xx)) break;
+      await new Promise(r => setTimeout(r, baseDelay * i));
+    }
+  }
+  throw lastErr;
 }
 
 export default async function handler(req, res) {
@@ -97,7 +125,7 @@ Esta es la tarea que debes cumplir como AUREA:
 2. Elige a cuál de estos temas se relaciona más el mensaje: ${Object.keys(calificaciones).join(", ")}. No inventes ni agregues temas. Elige sólo 1.
 3. Define una calificación de 0 a 100 que represente el nivel de malestar o bienestar emocional del usuario en el tema elegido. Justifícala con algún instrumento psicológico institucional para darle certeza a la información.
 4. Define una calificación de 0 a 100 que defina qué tan segura estás de la calificación del número 4.
-5. Redacta una respuesta de no más de 1000 caracteres que acompañe al usuario. Hazlo como AUREA. Dale seguimiento a la conversación con el historial de conversación, genera rapport y nunca empieces un mensaje con un saludo. Si necesitas preguntar algo para poder aumentar tu calificación de certeza, agrégala, pero siempre siguiendo los protocolos de TCC y Neurociencias.
+5. Redacta una respuesta de no más de 1000 caracteres que acompañe al usuario. Hazlo como AUREA. Dale seguimiento a la conversación con el historial de conversación, genera rapport y nunca empieces un mensaje con un saludo. Si necesitas preguntar algo para poder aumentar tu calificación de certeza, agrégala, pero siempre en tu rol como AUREA.
 6. IMPORTANTÍSIMO: Siempre que detectes señales o palabras literales relacionadas con ideas suicidas u obsesivas, adicciones a sustancias ilegales, autolesiones, abuso sexual, violencia de género, ansiedad o depresión extrema, violencia física o psicológica, acoso, bullying, violencia intrafamiliar, TCA o ludopatía debes activar el Protocolo de Alerta y escribir exactamente: "SOS". Si no detectas señales de este tipo, escribe exactamente: "OK".
 
 Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adicional:
@@ -113,30 +141,49 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
     `.trim();
     // ================== FIN PROMPT ORIGINAL (SIN CAMBIOS) ===================
 
-    // 1) Llamada a OpenAI con timeout
-    const ctrl = new AbortController();
-    const timeout = setTimeout(() => ctrl.abort(), 35000);
-    let aiResp;
+    // 1) Llamada a OpenAI con timeout + reintentos
+    let data;
     try {
-      aiResp = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${OPENAI_API_KEY}`
+      const resp = await retry(
+        async () => {
+          const r = await withTimeoutFetch(
+            "https://api.openai.com/v1/chat/completions",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${OPENAI_API_KEY}`
+              },
+              body: JSON.stringify({
+                model: OPENAI_MODEL,
+                messages: [{ role: "user", content: prompt }],
+                temperature: 0.7,
+                max_tokens: 400
+              })
+            },
+            OPENAI_TIMEOUT_MS
+          );
+          if (!r.ok) {
+            const txt = await r.text().catch(() => "");
+            const err = new Error(`OpenAI ${r.status}`);
+            err.status = r.status;
+            err.body = txt;
+            throw err;
+          }
+          return r.json();
         },
-        body: JSON.stringify({
-          model: OPENAI_MODEL,
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.7,
-          max_tokens: 400
-        }),
-        signal: ctrl.signal
-      });
-    } finally {
-      clearTimeout(timeout);
+        { tries: 3, baseDelay: 600 }
+      );
+      data = resp;
+    } catch (err) {
+      if (err?.name === "AbortError") {
+        console.error("⛔ AbortError en /api/aurea (timeout o conexión cancelada):", err);
+        return res.status(504).json({ ok: false, error: "Timeout al consultar el modelo" });
+      }
+      console.error("🔥 Error al consultar OpenAI:", err?.message || err, err?.status, err?.body);
+      return res.status(502).json({ ok: false, error: "Error consultando el modelo" });
     }
 
-    const data = await aiResp.json();
     if (!data?.choices?.[0]?.message?.content) {
       return res.status(500).json({ ok: false, error: "Respuesta vacía de OpenAI" });
     }
@@ -156,7 +203,7 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
     const SOS = String(json.SOS || "OK").toUpperCase() === "SOS" ? "SOS" : "OK";
     const mensajeUsuario = String(json.mensajeUsuario || "Gracias por compartir.");
 
-    // 3) Registrar TOKENS (registrarTokens.gs) — FIRE-AND-FORGET (sin esperar)
+    // 3) Registrar TOKENS (registrarTokens.gs) — FIRE-AND-FORGET
     const usage = data.usage || {};
     const costoUSD = usage.total_tokens ? usage.total_tokens * 0.00001 : 0;
     const tokensPayload = {
@@ -168,10 +215,9 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
       totalTokens: usage.total_tokens || 0,
       costoUSD: Number(costoUSD.toFixed(6))
     };
-    // Enviamos sin await para evitar falsos timeouts en logs
     postJSON(GAS_TOKENS_URL, tokensPayload, 7000)
       .then(r => { console.log("Tokens GAS (ff):", r?.status, r?.j || r?.text); })
-      .catch(() => { /* no ruido si tarda o falla */ });
+      .catch(() => { /* silencio */ });
 
     // 4) LOGS críticos (espera corta) — en paralelo
     const calificacionAnterior = (temaDetectado && typeof calificaciones?.[temaDetectado] === "number")
@@ -193,9 +239,9 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
     };
 
     await Promise.allSettled([
-      postJSON(GAS_LOG_CALIFICACIONES_URL, logCalifPayload, 4000),
-      temaDetectado ? postJSON(GAS_TEMAS_INSTITUCION_URL, { institucion, tema: temaDetectado }, 4000) : Promise.resolve({ ok: true }),
-      temaDetectado ? postJSON(GAS_CONTAR_TEMA_URL, { correo, tema: temaDetectado, evento: "mensaje", valor: 1, extra: { institucion } }, 4000) : Promise.resolve({ ok: true })
+      retry(() => postJSON(GAS_LOG_CALIFICACIONES_URL, logCalifPayload, 4000), { tries: 2, baseDelay: 500 }),
+      temaDetectado ? retry(() => postJSON(GAS_TEMAS_INSTITUCION_URL, { institucion, tema: temaDetectado }, 4000), { tries: 2, baseDelay: 500 }) : Promise.resolve({ ok: true }),
+      temaDetectado ? retry(() => postJSON(GAS_CONTAR_TEMA_URL, { correo, tema: temaDetectado, evento: "mensaje", valor: 1, extra: { institucion } }, 4000), { tries: 2, baseDelay: 500 }) : Promise.resolve({ ok: true })
     ]);
 
     // 5) Respuesta al orquestador/FE
@@ -211,9 +257,11 @@ Devuelve exclusivamente este objeto JSON. No agregues explicaciones ni texto adi
     });
 
   } catch (err) {
+    if (err?.name === "AbortError") {
+      console.error("⛔ AbortError raíz en /api/aurea:", err);
+      return res.status(504).json({ ok: false, error: "Timeout interno" });
+    }
     console.error("🔥 Error en aurea.js:", err);
     return res.status(500).json({ ok: false, error: "Error interno en AUREA" });
   }
 }
-
-
