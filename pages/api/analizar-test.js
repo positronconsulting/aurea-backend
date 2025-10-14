@@ -11,18 +11,15 @@ export default async function handler(req, res) {
     return res.status(405).json({ ok:false, error:"Method Not Allowed" });
   }
 
-  // ── Token interno (lo envía el worker) ─────────────────────────────────────
+  // ── Token interno (acepta INTERNAL y, temporalmente, ADMIN) ───────────────
   const expected = (process.env.AUREA_INTERNAL_TOKEN || "").trim();
-  const got = String(req.headers["x-internal-token"] || "").trim();
+  const admin    = (process.env.AUREA_ADMIN_KEY || "").trim();
+  const got      = String(req.headers["x-internal-token"] || "").trim();
 
-  // Logs cortos para diagnóstico
-  if (process.env.NODE_ENV !== "production") {
-    console.log("[analizar-test] expected.len:", expected.length);
-    console.log("[analizar-test] got.len     :", got.length);
-    console.log("[analizar-test] got.prefix  :", got.slice(0, 5));
+  if (!expected && !admin) {
+    return res.status(500).json({ ok:false, error:"Falta AUREA_INTERNAL_TOKEN en env" });
   }
-
-  if (!expected || got !== expected) {
+  if (got !== expected && got !== admin) {
     return res.status(401).json({ ok:false, error:"Unauthorized" });
   }
 
@@ -58,12 +55,12 @@ export default async function handler(req, res) {
   try {
     const { tipoInstitucion, email, correoSOS, codigo } = (req.body || {});
     if (!tipoInstitucion) {
-      return res.status(400).json({ ok:false, error:"tipoInstitucion requerido" });
+      return res.status(400).json({ ok:false, error:"tipoInstitucion requerido" }); // :contentReference[oaicite:3]{index=3}
     }
 
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      return res.status(500).json({ ok:false, error:"Falta OPENAI_API_KEY" });
+      return res.status(500).json({ ok:false, error:"Falta OPENAI_API_KEY" }); // :contentReference[oaicite:4]{index=4}
     }
 
     const tipo = String(tipoInstitucion || "").trim().toLowerCase();
@@ -75,11 +72,11 @@ export default async function handler(req, res) {
         email,
         correoSOS,
         codigo,
-        jobId: `${email}-${Date.now()}`,           // 👈 trazabilidad
-        requestedAt: new Date().toISOString()      // 👈 auditoría
+        jobId: `${email}-${Date.now()}`,
+        requestedAt: new Date().toISOString()
       };
-
       if (email) payload.email = String(email).toLowerCase();
+
       const backoffs = [0, 1500, 3000];
       let last = null;
       for (let i=0;i<backoffs.length;i++){
@@ -97,15 +94,15 @@ export default async function handler(req, res) {
         stage: "GAS",
         error: g?.j?.error || g?.text || "GAS sin pendiente",
         detail: { tipo, email: email || "", codigo: codigo || "" }
-      });
+      }); // :contentReference[oaicite:5]{index=5}
     }
 
-    const correoUsuario = String(g.j.usuario || "").toLowerCase();
-    let nombre = g.j.nombre || "";
-    const sexo = g.j.sexo || "";
+    const correoUsuario   = String(g.j.usuario || "").toLowerCase();
+    let nombre            = g.j.nombre || "";
+    const sexo            = g.j.sexo || "";
     const fechaNacimiento = g.j.fechaNacimiento || "";
-    const respuestas = g.j.respuestas || {};
-    const comentarioLibre = inval(g.j.info) ? "" : String(g.j.info).trim();
+    const respuestas      = g.j.respuestas || {};
+    const comentarioLibre = inval(g.j.info) ? "" : String(g.j.info).trim(); // :contentReference[oaicite:6]{index=6}
 
     // 2) Enriquecer nombre desde Usuarios (si falta)
     if (!nombre && correoUsuario) {
@@ -116,7 +113,7 @@ export default async function handler(req, res) {
           nombre = [usr.nombre||"", usr.apellido||""].join(" ").trim();
         }
       } catch(_) {}
-      if (!nombre) nombre = correoUsuario.split("@")[0];
+      if (!nombre) nombre = correoUsuario.split("@")[0]; // :contentReference[oaicite:7]{index=7}
     }
 
     // 3) PROMPT
@@ -150,42 +147,61 @@ Tu tarea es:
 - "alertaSOS": true si hay riesgo emocional urgente que requiere atención inmediata por un profesional. Si no lo hay, false.
 - "temaDetectado": si hay alertaSOS, indica el tema que más contribuye a la alerta. Si no la hay, deja vacío o null.
 
-Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues explicaciones ni encabezados. NO INCLUYAS ningún texto antes o después. Única y exclusivamente el JSON en el siguiente formato:
+Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues explicaciones ni encabezados. NO INCLUYAS ningún texto antes o después. Únicamente este JSON:
 {
   "perfil": "Texto del perfil emocional...",
   "alertaSOS": true | false,
   "temaDetectado": "Solo si hay alertaSOS"
 }
-`.trim();
+`.trim(); // :contentReference[oaicite:8]{index=8} :contentReference[oaicite:9]{index=9}
 
+    // 4) OpenAI con timeout y errores estructurados
     async function pedirOpenAI() {
-      const r = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model: "gpt-4o-mini", // usa el modelo que prefieras disponible en tu cuenta
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.7,
-          max_tokens: 800
-        })
-      });
-      const j = await r.json();
-      const content = j?.choices?.[0]?.message?.content || "";
-      let out;
-      try { out = JSON.parse(content); }
-      catch { out = { perfil: content, alertaSOS: false, temaDetectado: "" }; }
-      return { completion: j, out };
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 15000);
+      let r;
+      try {
+        r = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [{ role: "user", content: prompt }],
+            temperature: 0.7,
+            max_tokens: 800
+          }),
+          signal: controller.signal
+        }); // (antes no tenía try/catch) :contentReference[oaicite:10]{index=10}
+      } catch (e) {
+        clearTimeout(t);
+        return { errorStage: "OPENAI_FETCH", detail: String(e && e.message || e) };
+      } finally {
+        clearTimeout(t);
+      }
+
+      let jText = "";
+      try {
+        jText = await r.text(); // leer texto bruto para debug
+        const j = JSON.parse(jText);
+        const content = j?.choices?.[0]?.message?.content || "";
+        let out;
+        try { out = JSON.parse(content); }
+        catch { out = { perfil: content, alertaSOS: false, temaDetectado: "" }; }
+        return { completion: j, out, status: r.status };
+      } catch (e) {
+        return { errorStage: "OPENAI_PARSE", status: r && r.status, body: jText.slice(0, 800), detail: String(e && e.message || e) };
+      }
     }
 
-    const valido = (s) => !inval(s) && String(s).trim().length >= 50;
+    const valido = (s) => !inval(s) && String(s).trim().length >= 50; // :contentReference[oaicite:11]{index=11}
 
-    // 4) OpenAI con validación y reintento
-    let resultado = null;
+    let resultado = null, lastDiag = null;
     for (let intento = 0; intento < 2; intento++) {
-      const { out } = await pedirOpenAI();
-      const perfil = out?.perfil || "";
+      const r = await pedirOpenAI();
+      if (r?.errorStage) { lastDiag = r; break; }
+      const perfil = r?.out?.perfil || "";
       if (valido(perfil)) {
-        resultado = { perfil, sos: !!out?.alertaSOS, tema: out?.temaDetectado || "" };
+        resultado = { perfil, sos: !!r?.out?.alertaSOS, tema: r?.out?.temaDetectado || "" };
         break;
       }
       await sleep(600);
@@ -194,16 +210,22 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
     if (!resultado) {
       return res.status(200).json({
         ok: false,
-        stage: "OPENAI",
-        error: "Perfil vacío/None/corto tras reintento",
-        detail: { tipo, email: email||"", codigo: codigo||"", correoUsuario }
-      });
+        stage: lastDiag?.errorStage || "OPENAI",
+        error: lastDiag?.detail || "Perfil vacío/None/corto tras reintento",
+        detail: {
+          tipo,
+          email: email||"",
+          codigo: codigo||"",
+          openaiStatus: lastDiag?.status || null,
+          openaiBody: lastDiag?.body || null
+        }
+      }); // :contentReference[oaicite:12]{index=12}
     }
 
-    // 5) Enviar correo (usuario + SOS + Alfredo)
+    // 5) Enviar correo
     const destinatarios = [
-      correoUsuario,
-      (correoSOS || "").trim(),
+      String(correoUsuario || "").trim(),
+      String(correoSOS || "").trim(),
       "alfredo@positronconsulting.com"
     ].filter(Boolean);
 
@@ -227,7 +249,7 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
       cc: destinatarios.filter(d => d !== correoUsuario),
       bcc: [],
       extraDestinatarios: destinatarios
-    });
+    }); // :contentReference[oaicite:13]{index=13}
 
     if (!envio.ok) {
       return res.status(200).json({
@@ -235,12 +257,13 @@ Es de suma importancia que devuelvas exclusivamente un objeto JSON. No agregues 
         stage: "SENDMAIL",
         error: "Fallo al enviar correo",
         detail: { tipo, email: email||"", codigo: codigo||"", correoUsuario }
-      });
+      }); // :contentReference[oaicite:14]{index=14}
     }
 
-    return res.status(200).json({ ok: true });
+    return res.status(200).json({ ok: true }); // :contentReference[oaicite:15]{index=15}
+
   } catch (err) {
     console.error("🔥 Error en analizar-test.js:", err);
-    return res.status(500).json({ ok: false, error: "Error interno en analizar-test" });
+    return res.status(500).json({ ok: false, error: "Error interno en analizar-test" }); // :contentReference[oaicite:16]{index=16}
   }
 }
